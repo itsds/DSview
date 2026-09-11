@@ -3,8 +3,10 @@ candle_aggregator.py
 
 OHLCV candle aggregation — feature roadmap milestone toward the
 lightweight-charts frontend. Reads `market.trades.raw`, tumbling-windows
-each symbol's trades into 1-minute candles, and (for now) prints the
-result to the console for verification.
+each symbol's trades into 1-minute candles, prints each batch to the
+console (still useful as a live sanity check), and writes the latest
+candle per symbol to Redis via redis_sink.CandleRedisSink so the (not yet
+built) FastAPI backend has real-time state to serve.
 
 This is a Spark Structured Streaming job, unlike whale_detector.py:
 computing open/high/low/close/volume needs to aggregate many trades
@@ -12,9 +14,10 @@ within a time window, which is exactly the stateful, windowed workload
 Spark Structured Streaming is for — see whale_detector.py's docstring for
 why *that* job deliberately avoids Spark.
 
-Verification-first per the current build step: this job only prints to
-the console sink. No Redis/Postgres/backend/frontend wiring yet — that
-comes once OHLCV output here is confirmed correct.
+Structured Streaming has no built-in Redis sink, so both the console
+print and the Redis write happen inside one foreachBatch — that keeps it
+a single streaming query against Kafka rather than two queries reading
+the same topic twice.
 
 Run from streaming/ (not repo root, not from inside jobs/) so schemas.py
 and spark_session.py resolve as bare imports, matching ingestion/'s flat
@@ -30,6 +33,7 @@ from __future__ import annotations
 from pyspark.sql import functions as F
 from pyspark.sql.types import DecimalType
 
+from redis_sink import CandleRedisSink
 from schemas import TRADE_EVENT_SCHEMA
 from spark_session import get_spark_session
 
@@ -47,8 +51,10 @@ WATERMARK_DELAY = "10 seconds"
 _DECIMAL = DecimalType(38, 18)
 
 
-def build_candle_query(spark) -> "pyspark.sql.streaming.StreamingQuery":  # noqa: F821
-    """Wire up the read -> parse -> window-aggregate -> console-sink pipeline."""
+def build_candle_query(
+    spark, redis_sink: CandleRedisSink
+) -> "pyspark.sql.streaming.StreamingQuery":  # noqa: F821
+    """Wire up the read -> parse -> window-aggregate -> console+Redis sink pipeline."""
     raw = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
@@ -93,10 +99,14 @@ def build_candle_query(spark) -> "pyspark.sql.streaming.StreamingQuery":  # noqa
         )
     )
 
+    def _write_batch(batch_df, batch_id: int) -> None:
+        batch_df.show(truncate=False)
+        for row in batch_df.collect():
+            redis_sink.write_candle(row.asDict())
+
     return (
         candles.writeStream.outputMode("update")
-        .format("console")
-        .option("truncate", "false")
+        .foreachBatch(_write_batch)
         .trigger(processingTime="5 seconds")
         .start()
     )
@@ -104,7 +114,8 @@ def build_candle_query(spark) -> "pyspark.sql.streaming.StreamingQuery":  # noqa
 
 def main() -> None:
     spark = get_spark_session("dsview-candle-aggregator")
-    query = build_candle_query(spark)
+    redis_sink = CandleRedisSink()
+    query = build_candle_query(spark, redis_sink)
     try:
         query.awaitTermination()
     except KeyboardInterrupt:

@@ -6,16 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 DSView — a real-time, multi-asset trading data pipeline (Kafka, Spark Structured Streaming, FastAPI) with custom volume footprint, whale tracking, and technical indicators.
 
-`ingestion/` and `streaming/` have real implementation. `storage/` is still an empty stub package (`__init__.py` only) — nothing downstream of Redpanda/Spark persists anywhere yet.
+`ingestion/`, `streaming/`, and now `backend/` have real implementation. `storage/` is still an empty stub package (`__init__.py` only) — Postgres/historical persistence doesn't exist yet, though Redis now holds real-time serving state. `backend/` only has the WebSocket live-push side so far; REST historical endpoints wait on `storage/`.
 
 ## Setup / running
 
 ```bash
 pip install -r ingestion/requirements.txt
-pip install -r streaming/requirements.txt   # pyspark; also requires a JDK (17 tested) on PATH
+pip install -r streaming/requirements.txt   # pyspark + redis; pyspark also requires a JDK (17 tested) on PATH
+pip install -r backend/requirements.txt     # fastapi, uvicorn, redis
 ```
 
-Local infra (Redpanda + its web Console, browsable at `http://localhost:8080`):
+Local infra (Redpanda + its web Console at `http://localhost:8080`, Redis + RedisInsight at `http://localhost:5540` — add a connection there pointing at host `redis`, port `6379`):
 
 ```bash
 docker compose up -d
@@ -33,10 +34,16 @@ Run the whale detector (plain asyncio consumer, no Spark):
 cd streaming && python -m jobs.whale_detector
 ```
 
-Run the candle aggregator (Spark Structured Streaming; prints OHLCV candles to the console for now — no storage/backend/frontend wiring yet):
+Run the candle aggregator (Spark Structured Streaming; prints OHLCV candles to the console and writes the latest candle per symbol to Redis — no Postgres/backend/frontend wiring yet):
 
 ```bash
 cd streaming && python -m jobs.candle_aggregator
+```
+
+Run the backend (WebSocket live-candle push only — no REST/historical endpoints yet):
+
+```bash
+cd backend && uvicorn main:app --reload --port 8000
 ```
 
 There is no test suite, linter, or build step configured yet anywhere in the repo.
@@ -58,7 +65,13 @@ When extending ingestion: normalize to `schema.py` types, keep new exchange adap
 - **`jobs/whale_detector.py`** is a plain asyncio `aiokafka` consumer — flagging one trade against a size threshold needs no windowing or cross-event state, so Spark's startup/resource cost would be pure overhead here.
 - **`jobs/candle_aggregator.py`** is a Spark Structured Streaming job — OHLCV needs aggregation across many trades within a time window, which is what Spark earns its keep on. `spark_session.py` centralizes the SparkSession config (including the `spark.jars.packages` coordinate for the Kafka connector, version-pinned to the installed pyspark) so every windowed job shares one config instead of drifting. `schemas.py` declares the raw JSON wire shape as a Spark `StructType` (all `StringType`, cast to real types after `from_json`) rather than importing `ingestion/schema.py`'s pydantic models — same reasoning `whale_detector.py` documents: once an event is on the wire it's just JSON, so a consumer shouldn't share Python types with the producer across the topic boundary.
 - Both jobs read `market.trades.raw` directly; neither imports the other or `ingestion/`.
-- `candle_aggregator.py` currently only writes to the console sink for verification — Redis/Postgres/backend/frontend wiring is deliberately not built yet (see the Deployment approach section below: verify each layer before adding the next).
+- **`redis_sink.py`** (`CandleRedisSink`) is the serving-layer write boundary, analogous to `producer.py`'s role for Kafka: `candle_aggregator.py` never touches `redis` directly, only this class. Structured Streaming has no built-in Redis sink, so both the console print and the Redis write happen inside one `foreachBatch` closure — one streaming query against Kafka, not two. Every candle write goes to two places: a TTL'd SET (`candle:{symbol}:{timeframe}`) so a newly-connected client can fetch current state immediately, and a PUBLISH (`candle_updates:{symbol}:{timeframe}`) so already-connected clients get pushed each update. Redis is real-time serving state, not history — Postgres storage doesn't exist yet.
+
+`backend/` is a FastAPI service, currently WebSocket-only:
+
+- **`redis_client.py`** (`CandleRedisReader`) is the read-side counterpart to `streaming/redis_sink.py` — the sole place `backend/` touches `redis`. `get_latest()` reads the cached SET (for a client's initial state); `subscribe_updates()` is an async generator over the PUBLISH channel.
+- **`routers/ws.py`** exposes `/ws/candles/{symbol}`: sends the current cached candle on connect, then forwards every subsequent pub/sub update until the client disconnects.
+- **`main.py`** is the FastAPI entrypoint; only wires up `ws.py` for now. `routers/candles.py` (REST historical candles) is the planned next router, but it's blocked on the Postgres/storage layer, which doesn't exist yet — don't build it against Redis as a stand-in, Redis has no history to serve.
 
 # DSView — Project Context
 

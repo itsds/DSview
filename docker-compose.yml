@@ -1,8 +1,8 @@
 # DSView local infra.
 #
-# Redpanda (+ its web Console) only for now — Redis/Postgres get added here
-# once the storage and serving layers are built (see CLAUDE.md's architecture
-# table). Nothing is containerized yet on purpose besides these two.
+# Redpanda (+ its web Console) and Redis for now — Postgres gets added here
+# once the historical storage layer is built (see CLAUDE.md's architecture
+# table).
 #
 # Redpanda exposes two listeners because it has two different kinds of
 # clients to serve:
@@ -44,5 +44,28 @@ services:
     ports:
       - "8080:8080"   # browse topics/messages/consumer groups at http://localhost:8080
 
+  redis:
+    image: redis:7.4-alpine
+    container_name: dsview-redis
+    ports:
+      - "6379:6379"   # streaming/redis_sink.py writes here; matches CandleRedisSink's default
+    # No volume: this holds only the latest candle per symbol (TTL'd, constantly
+    # overwritten) — it's a serving cache, not the source of truth. Losing it on
+    # restart just means a short gap until the next candle_aggregator.py batch.
+
+  redisinsight:
+    # `latest` rather than a pinned tag (unlike redpanda/console above) — no
+    # confirmed-working version tag on hand; run `docker compose pull
+    # redisinsight` if it ever needs a refresh.
+    image: redis/redisinsight:latest
+    container_name: dsview-redisinsight
+    depends_on:
+      - redis
+    ports:
+      - "5540:5540"   # UI at http://localhost:5540 — add a connection there: host "redis", port 6379
+    volumes:
+      - redisinsight-data:/data
+
 volumes:
   redpanda-data:
+  redisinsight-data:
