@@ -1,0 +1,48 @@
+# DSView local infra.
+#
+# Redpanda (+ its web Console) only for now — Redis/Postgres get added here
+# once the storage and serving layers are built (see CLAUDE.md's architecture
+# table). Nothing is containerized yet on purpose besides these two.
+#
+# Redpanda exposes two listeners because it has two different kinds of
+# clients to serve:
+#   - "external" (localhost:9092) — for processes running on the host
+#     (ingestion/, streaming/), which reach the container via the published
+#     port.
+#   - "internal" (redpanda:9093) — for other containers on this compose
+#     network (the console below), which must address it by service name;
+#     "localhost" from inside another container means that container itself,
+#     not this one.
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.18
+    container_name: dsview-redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=internal://0.0.0.0:9093,external://0.0.0.0:9092
+      - --advertise-kafka-addr=internal://redpanda:9093,external://localhost:9092
+    ports:
+      - "9092:9092"   # Kafka API (external) — matches KAFKA_BOOTSTRAP_SERVERS in ingestion/main.py
+      - "9644:9644"   # Admin API, used by `rpk` for status/topic inspection
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+
+  console:
+    image: docker.redpanda.com/redpandadata/console:v2.8.3
+    container_name: dsview-redpanda-console
+    depends_on:
+      - redpanda
+    environment:
+      KAFKA_BROKERS: redpanda:9093   # internal listener — see note above
+    ports:
+      - "8080:8080"   # browse topics/messages/consumer groups at http://localhost:8080
+
+volumes:
+  redpanda-data:
