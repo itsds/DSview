@@ -6,20 +6,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 DSView — a real-time, multi-asset trading data pipeline (Kafka, Spark Structured Streaming, FastAPI) with custom volume footprint, whale tracking, and technical indicators.
 
-`ingestion/`, `streaming/`, and now `backend/` have real implementation. `storage/` is still an empty stub package (`__init__.py` only) — Postgres/historical persistence doesn't exist yet, though Redis now holds real-time serving state. `backend/` only has the WebSocket live-push side so far; REST historical endpoints wait on `storage/`.
+`ingestion/`, `streaming/`, `storage/`, `backend/`, and `frontend/` all have real implementation: live Binance trades → Redpanda → Spark → Redis (live state) + Postgres/Parquet (history) → FastAPI (WebSocket + REST) → a `lightweight-charts` chart that backfills history on load, then live-updates. Not built yet: technical indicators, volume footprint, alerts, and the other planned top-level folders (`config/`, `tests/`, `data_quality/`, `observability/`).
 
 ## Setup / running
 
 ```bash
 pip install -r ingestion/requirements.txt
-pip install -r streaming/requirements.txt   # pyspark + redis; pyspark also requires a JDK (17 tested) on PATH
-pip install -r backend/requirements.txt     # fastapi, uvicorn, redis
+pip install -r streaming/requirements.txt   # pyspark + redis + psycopg; pyspark also requires a JDK (17 tested) on PATH
+pip install -r backend/requirements.txt     # fastapi, uvicorn, redis, psycopg
+pip install -r storage/requirements.txt     # psycopg, for init_db.py
+cd frontend && npm install
 ```
 
-Local infra (Redpanda + its web Console at `http://localhost:8080`, Redis + RedisInsight at `http://localhost:5540` — add a connection there pointing at host `redis`, port `6379`):
+Local infra (Redpanda + its web Console at `http://localhost:8080`, Redis + RedisInsight at `http://localhost:5540` — add a connection there pointing at host `redis`, port `6379` — and Postgres):
 
 ```bash
 docker compose up -d
+python storage/init_db.py   # one-time: creates the candles_1m table (see storage/ddl/)
 ```
 
 Run the ingestion service (requires the Redpanda broker above, reachable at `localhost:9092`):
@@ -34,16 +37,28 @@ Run the whale detector (plain asyncio consumer, no Spark):
 cd streaming && python -m jobs.whale_detector
 ```
 
-Run the candle aggregator (Spark Structured Streaming; prints OHLCV candles to the console and writes the latest candle per symbol to Redis — no Postgres/backend/frontend wiring yet):
+Run the candle aggregator (Spark Structured Streaming; prints OHLCV candles to the console and writes the latest candle per symbol to Redis + Postgres):
 
 ```bash
 cd streaming && python -m jobs.candle_aggregator
 ```
 
-Run the backend (WebSocket live-candle push only — no REST/historical endpoints yet):
+Run the storage writer (Spark Structured Streaming; Bronze/Silver/Gold Parquet under `storage/data/`, gitignored):
+
+```bash
+cd streaming && python -m jobs.storage_writer
+```
+
+Run the backend (WebSocket live push at `/ws/candles/{symbol}`, REST history at `/candles/{symbol}`):
 
 ```bash
 cd backend && uvicorn main:app --reload --port 8000
+```
+
+Run the frontend dev server (Vite, hot-reloading):
+
+```bash
+cd frontend && npm run dev
 ```
 
 There is no test suite, linter, or build step configured yet anywhere in the repo.
@@ -63,15 +78,31 @@ When extending ingestion: normalize to `schema.py` types, keep new exchange adap
 `streaming/` consumes what `ingestion/` publishes, and splits per-event vs. windowed work into two different execution models rather than forcing everything through Spark:
 
 - **`jobs/whale_detector.py`** is a plain asyncio `aiokafka` consumer — flagging one trade against a size threshold needs no windowing or cross-event state, so Spark's startup/resource cost would be pure overhead here.
-- **`jobs/candle_aggregator.py`** is a Spark Structured Streaming job — OHLCV needs aggregation across many trades within a time window, which is what Spark earns its keep on. `spark_session.py` centralizes the SparkSession config (including the `spark.jars.packages` coordinate for the Kafka connector, version-pinned to the installed pyspark) so every windowed job shares one config instead of drifting. `schemas.py` declares the raw JSON wire shape as a Spark `StructType` (all `StringType`, cast to real types after `from_json`) rather than importing `ingestion/schema.py`'s pydantic models — same reasoning `whale_detector.py` documents: once an event is on the wire it's just JSON, so a consumer shouldn't share Python types with the producer across the topic boundary.
-- Both jobs read `market.trades.raw` directly; neither imports the other or `ingestion/`.
-- **`redis_sink.py`** (`CandleRedisSink`) is the serving-layer write boundary, analogous to `producer.py`'s role for Kafka: `candle_aggregator.py` never touches `redis` directly, only this class. Structured Streaming has no built-in Redis sink, so both the console print and the Redis write happen inside one `foreachBatch` closure — one streaming query against Kafka, not two. Every candle write goes to two places: a TTL'd SET (`candle:{symbol}:{timeframe}`) so a newly-connected client can fetch current state immediately, and a PUBLISH (`candle_updates:{symbol}:{timeframe}`) so already-connected clients get pushed each update. Redis is real-time serving state, not history — Postgres storage doesn't exist yet.
+- **`trades_source.py`** (`read_trades_stream()`) and **`candle_windowing.py`** (`build_candles()`) are the shared Kafka-read/parse and tumbling-window-aggregation steps, factored out so `jobs/candle_aggregator.py` and `jobs/storage_writer.py` can't drift against each other — both consume `market.trades.raw` and compute the exact same OHLCV logic, just with different output modes and sinks (see below). `schemas.py` declares the raw JSON wire shape as a Spark `StructType` (all `StringType`, cast to real types after `from_json`) rather than importing `ingestion/schema.py`'s pydantic models — same reasoning `whale_detector.py` documents: once an event is on the wire it's just JSON, so a consumer shouldn't share Python types with the producer across the topic boundary. `spark_session.py` centralizes the SparkSession config (including the `spark.jars.packages` coordinate for the Kafka connector, version-pinned to the installed pyspark) so every job shares one config instead of drifting.
+- **`jobs/candle_aggregator.py`** runs the windowed aggregation in `outputMode("update")` for **live serving**: writes console + `redis_sink.py` + `postgres_sink.py` inside one `foreachBatch` (Structured Streaming has no built-in Redis/Postgres sink, so one streaming query does all three rather than three separate queries against Kafka).
+  - **`redis_sink.py`** (`CandleRedisSink`) — analogous to `producer.py`'s role for Kafka: nothing else touches `redis` directly. Every write goes to two places: a TTL'd SET (`candle:{symbol}:{timeframe}`) so a newly-connected client can fetch current state immediately, and a PUBLISH (`candle_updates:{symbol}:{timeframe}`) so already-connected clients get pushed each update.
+  - **`postgres_sink.py`** (`CandlePostgresSink`) — upserts into Postgres's `candles_1m` table (`ON CONFLICT (symbol, window_start) DO UPDATE`) on every batch. Upserting repeatedly rather than writing once-on-close is deliberate: update mode never signals "this window is finalized," but repeated upserts converge to the correct final row once the watermark stops emitting updates for that window — no separate close-detection needed.
+  - **Timestamps**: PySpark's `collect()` returns `TimestampType` as a *naive* datetime in the driver's local timezone (IST on the dev laptop), not UTC. `_row_to_candle()` converts `window_start`/`window_end` to aware UTC before either sink sees them — any future `foreachBatch` job writing timestamps out must do the same. Skipping it once left Postgres storing every candle 5h30m in the future and the chart's backfilled history misaligned with its live updates.
+- **`jobs/storage_writer.py`** runs three *separate* streaming queries in one Spark application (one JVM, one Kafka-connector resolution, instead of three) for the Bronze/Silver/Gold Parquet layers under `storage/data/` (gitignored):
+  - **Bronze** (`storage/data/bronze/trades/`) — `market.trades.raw` written append-only, exactly as `trades_source.py` parses it. The durable replay/backtest source (feature roadmap item 4).
+  - **Silver** (`storage/data/silver/trades/`) — Bronze deduplicated by `trade_id` within a watermark window. Ingestion's pydantic validation already guarantees well-formed data, so dedup + a compacted layout is Silver's whole job for now.
+  - **Gold** (`storage/data/gold/candles_1m/`) — the *same* `candle_windowing.build_candles()` aggregation as `candle_aggregator.py`, but in `outputMode("append")` instead of `"update"`. Append mode only emits a window once its watermark has passed — exactly once per finalized candle — which is what makes it safe to write to an append-only Parquet sink; writing `candle_aggregator.py`'s update-mode output to Parquet instead would pile up duplicate, progressively-refined rows per window. This is why Gold can't just consume `candle_aggregator.py`'s stream and needs its own query built from the shared aggregation function instead.
+- `storage/ddl/gold_candles.sql` defines the `candles_1m` Postgres table `postgres_sink.py` upserts into; apply it once via `storage/init_db.py` (see Setup above). Not using a migration tool yet — revisit once there's more than one table.
 
-`backend/` is a FastAPI service, currently WebSocket-only:
+`backend/` is a FastAPI service with both a live push and a historical-read side:
 
 - **`redis_client.py`** (`CandleRedisReader`) is the read-side counterpart to `streaming/redis_sink.py` — the sole place `backend/` touches `redis`. `get_latest()` reads the cached SET (for a client's initial state); `subscribe_updates()` is an async generator over the PUBLISH channel.
 - **`routers/ws.py`** exposes `/ws/candles/{symbol}`: sends the current cached candle on connect, then forwards every subsequent pub/sub update until the client disconnects.
-- **`main.py`** is the FastAPI entrypoint; only wires up `ws.py` for now. `routers/candles.py` (REST historical candles) is the planned next router, but it's blocked on the Postgres/storage layer, which doesn't exist yet — don't build it against Redis as a stand-in, Redis has no history to serve.
+- **`postgres_client.py`** (`CandleHistoryReader`) is the read-side counterpart to `streaming/postgres_sink.py` — the sole place `backend/` touches `psycopg`/Postgres. One connection per request for now (dev request volumes only; a pool is a documented future TODO, not built prematurely).
+- **`routers/candles.py`** exposes `GET /candles/{symbol}?limit=N`: recent candles from `candles_1m`, oldest first (chart order). This is a genuinely different data path from `ws.py` — it never touches Redis, which has no history to serve.
+- **`main.py`** wires up both routers, plus `CORSMiddleware` (allowing `http://localhost:5173`, the Vite dev server) — REST, unlike WebSocket, is subject to browser CORS once frontend and backend are different origins/ports.
+
+`frontend/` is a Vite + React app (plain JS, `.jsx`, no TypeScript):
+
+- **`hooks/useCandleHistory.js`** does a one-shot `fetch` of `GET /candles/{symbol}` on mount/symbol-change.
+- **`hooks/useLiveCandles.js`** owns the WebSocket connection to `/ws/candles/{symbol}` and exposes the latest parsed candle as React state. No reconnect/backoff logic yet.
+- **`components/CandleChart.jsx`** wraps `lightweight-charts` (TradingView's open-source rendering library — unrelated to any "TradingView API," see the Data sources section below) and takes both `history` and `candle` props: `history` seeds the chart once via `setData()` (standard lightweight-charts backfill pattern), then `candle` keeps it live via `series.update()`. `update()` specifically — not `setData()` again — for the live path: the backend re-sends the *same* `window_start` repeatedly while a candle is still forming, and `update()` replaces a bar with a matching timestamp instead of duplicating it, while a new timestamp appends a new bar — exactly matching how `candle_aggregator.py` emits data.
+- **`App.jsx`** hardcodes `SYMBOL = "BTCUSDT"` — symbol selection and timeframe switching are future work, not implemented.
 
 # DSView — Project Context
 

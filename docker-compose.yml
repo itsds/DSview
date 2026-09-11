@@ -1,8 +1,4 @@
-# DSView local infra.
-#
-# Redpanda (+ its web Console) and Redis for now — Postgres gets added here
-# once the historical storage layer is built (see CLAUDE.md's architecture
-# table).
+# DSView local infra: Redpanda (+ Console), Redis (+ RedisInsight), Postgres.
 #
 # Redpanda exposes two listeners because it has two different kinds of
 # clients to serve:
@@ -66,6 +62,20 @@ services:
     volumes:
       - redisinsight-data:/data
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: dsview-postgres
+    environment:
+      # Local dev only — never reuse these credentials anywhere real.
+      POSTGRES_USER: dsview
+      POSTGRES_PASSWORD: dsview
+      POSTGRES_DB: dsview
+    ports:
+      - "5432:5432"   # storage/init_db.py and streaming/postgres_sink.py connect here
+    volumes:
+      - postgres-data:/var/lib/postgresql/data   # this IS the source of truth for candle history — keep it
+
 volumes:
   redpanda-data:
   redisinsight-data:
+  postgres-data:
