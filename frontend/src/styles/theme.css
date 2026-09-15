@@ -1,0 +1,76 @@
+/*
+ * theme.css
+ *
+ * DSView's design tokens and base styles. The single source of truth for
+ * colours: components/chart/chartTheme.js reads these same variables so the
+ * canvas-drawn chart matches the DOM around it. Dark only for now.
+ *
+ * Author: @DS
+ */
+
+:root {
+  color-scheme: dark;
+
+  --color-app-bg: #07090d; /* shows through the gaps between panels */
+  --color-surface: #0f1319; /* toolbars, panels, chart background */
+  --color-surface-hover: #1b212b;
+  --color-border: #232a35;
+  --color-grid: #161b23;
+  --color-text: #d4d9e1;
+  --color-text-muted: #7b8494;
+  --color-text-disabled: #545d6b;
+  --color-accent: #3f7ef6;
+  --color-accent-soft: rgba(63, 126, 246, 0.16);
+  --color-up: #26a69a;
+  --color-down: #ef5350;
+  --color-up-volume: rgba(38, 166, 154, 0.45);
+  --color-down-volume: rgba(239, 83, 80, 0.45);
+  --color-up-soft: rgba(38, 166, 154, 0.14);
+  --color-down-soft: rgba(239, 83, 80, 0.14);
+  --color-on-accent: #ffffff;
+  --color-warning: #f5a623;
+  --color-info: #26c6da;
+
+  /*
+   * Indicator line colours, in colour-slot order (see indicators/definitions.js).
+   * Dark steps from a validated reference palette, minus the hues that already
+   * mean something on this chart (aqua/green = up, red = down, blue = drawings)
+   * and orange (too close to both yellow and magenta). Checked against
+   * --color-surface: every pair clears colour-blind (ΔE 13.2) and
+   * normal-vision (ΔE 19.3) separation, and each is >= 3:1 on the surface.
+   */
+  --color-series-1: #c98500;
+  --color-series-2: #d55181;
+  --color-series-3: #9085e9;
+
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  --radius-panel: 6px;
+  --radius-control: 4px;
+  --gap-panel: 4px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-app-bg);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
