@@ -1,0 +1,39 @@
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 100%;
+  padding: 0 6px;
+  overflow-x: auto; /* narrow windows scroll the bar instead of wrapping it */
+  scrollbar-width: none;
+  background: var(--color-surface);
+  border-radius: var(--radius-panel);
+}
+
+.brand {
+  flex-shrink: 0;
+  padding: 0 8px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.brandAccent {
+  color: var(--color-accent);
+}
+
+.symbol {
+  flex-shrink: 0;
+  padding: 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.group {
+  display: flex;
+  gap: 2px;
+}
+
+.spacer {
+  flex: 1 0 8px;
+}

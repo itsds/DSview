@@ -1,0 +1,12 @@
+.wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+/* Absolutely filled, so its size (which autoSize follows) comes only from
+   the grid cell, never from the canvas the chart puts inside it. */
+.chart {
+  position: absolute;
+  inset: 0;
+}

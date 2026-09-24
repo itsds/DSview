@@ -1,0 +1,94 @@
+.row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  min-height: 22px;
+  margin-left: -4px;
+  padding: 0 4px;
+  border-radius: var(--radius-control);
+  pointer-events: auto; /* the row takes hover (to show its buttons); the legend around it doesn't */
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+}
+
+.row:hover,
+.row:focus-within {
+  background: var(--color-surface);
+  box-shadow: 0 0 0 1px var(--color-border);
+}
+
+.name {
+  color: var(--color-text-muted);
+}
+
+.hidden .name {
+  color: var(--color-text-disabled);
+}
+
+.value {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.swatch {
+  width: 12px;
+  border-top-width: 2px;
+}
+
+.actions {
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+}
+
+.row:hover .actions,
+.row:focus-within .actions {
+  opacity: 1;
+}
+
+/* No hover on touch screens: keep the buttons showing. */
+@media (hover: none) {
+  .actions {
+    opacity: 1;
+  }
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.action:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.action:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.paneLegend {
+  position: absolute;
+  left: 12px;
+  right: 72px; /* stay clear of the price scale */
+  z-index: 3; /* above the chart's canvases */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin-top: 4px;
+  pointer-events: none; /* never block the crosshair */
+}

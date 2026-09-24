@@ -1,0 +1,56 @@
+.app {
+  display: grid;
+  height: 100%;
+  padding: var(--gap-panel);
+  gap: var(--gap-panel);
+  grid-template-columns: 52px minmax(0, 1fr) 280px;
+  grid-template-rows: 44px minmax(0, 1fr) 36px;
+  grid-template-areas:
+    "top   top    top"
+    "tools chart  panel"
+    "tools bottom panel";
+}
+
+.top {
+  grid-area: top;
+  min-width: 0;
+}
+
+.tools {
+  grid-area: tools;
+  min-height: 0;
+}
+
+.chart {
+  grid-area: chart;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-surface);
+  border-radius: var(--radius-panel);
+}
+
+.panel {
+  grid-area: panel;
+  min-height: 0;
+}
+
+.bottom {
+  grid-area: bottom;
+  min-width: 0;
+}
+
+/* Too narrow for a side panel: give its width back to the chart. */
+@media (max-width: 900px) {
+  .app {
+    grid-template-columns: 52px minmax(0, 1fr);
+    grid-template-areas:
+      "top   top"
+      "tools chart"
+      "tools bottom";
+  }
+
+  .panel {
+    display: none;
+  }
+}

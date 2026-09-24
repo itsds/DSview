@@ -1,0 +1,12 @@
+.input {
+  position: absolute;
+  z-index: 4; /* above the chart and the legend */
+  min-width: 140px;
+  padding: 2px 4px;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-control);
+  outline: none;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: 14px var(--font-ui);
+}

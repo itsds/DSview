@@ -1,0 +1,13 @@
+.toolbar {
+  display: flex;
+  flex-direction: column;
+  /* One straight column of tool buttons; a group's menu arrow sits to the right of its button. */
+  align-items: flex-start;
+  gap: 2px;
+  height: 100%;
+  padding: 6px 4px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  background: var(--color-surface);
+  border-radius: var(--radius-panel);
+}

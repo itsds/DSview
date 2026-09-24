@@ -56,7 +56,11 @@ def build_candle_query(
 
     def _write_batch(batch_df, batch_id: int) -> None:
         batch_df.show(truncate=False)
-        for row in batch_df.collect():
+        # A batch spanning a minute boundary holds two windows per symbol, and
+        # collect() order is arbitrary. Oldest-first keeps the Redis SET holding
+        # the newest candle and keeps pub/sub subscribers from seeing time go
+        # backwards (lightweight-charts' update() throws on an older bar).
+        for row in sorted(batch_df.collect(), key=lambda r: r["window_start"]):
             candle = _row_to_candle(row)
             redis_sink.write_candle(candle)
             postgres_sink.write_candle(candle)
