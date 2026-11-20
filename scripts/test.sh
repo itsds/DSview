@@ -4,13 +4,16 @@
 #
 # Runs DSView's whole test suite with one command: starts throwaway Kafka
 # (Redpanda), Redis and Postgres in Docker (tests/docker-compose.yml, its
-# own "dsview-test" compose project), waits until they answer, then runs
-# every test against them.
+# own "dsview-test" compose project), waits until they answer, runs the
+# pytest suite in tests/ against them, then the frontend's Vitest tests
+# (frontend/src/**/*.test.js, which need no services). Both always run;
+# the exit status is non-zero if either fails.
 #
 # Usage (from anywhere):
 #
 #     ./scripts/test.sh                  # test services in Docker, then the whole suite
 #     ./scripts/test.sh -k whale         # any other arguments go to pytest
+#     ./scripts/test.sh --no-frontend    # Python tests only
 #     ./scripts/test.sh -m "not spark"   # e.g. skip the slower Spark tests
 #     ./scripts/test.sh --no-docker      # use services already running (CI)
 #     ./scripts/test.sh down             # remove the test services
@@ -40,10 +43,14 @@ if [[ "${1:-}" == "down" ]]; then
 fi
 
 use_docker=1
-if [[ "${1:-}" == "--no-docker" ]]; then
-  use_docker=0
+run_frontend=1
+while [[ "${1:-}" == --no-docker || "${1:-}" == --no-frontend ]]; do
+  case "$1" in
+    --no-docker) use_docker=0 ;;
+    --no-frontend) run_frontend=0 ;;
+  esac
   shift
-fi
+done
 
 # Keep only where the services are; drop every other DSVIEW_* override.
 declare -A keep=()
@@ -88,4 +95,16 @@ cd "$ROOT"
 
 "$PYTHON" tests/wait_for_services.py
 
-"$PYTHON" -m pytest "$@"
+status=0
+"$PYTHON" -m pytest "$@" || status=$?
+
+if ((run_frontend)); then
+  if [[ ! -d frontend/node_modules ]]; then
+    echo "frontend/node_modules missing: run \`cd frontend && npm install\` (CI: npm ci)" >&2
+    status=1
+  else
+    (cd frontend && npm test) || status=$?
+  fi
+fi
+
+exit "$status"
