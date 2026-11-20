@@ -85,9 +85,9 @@ show anything useful; its replay and backtest nodes land in Phase 4.
       gets a `scripts/dev.sh` window.
 - [x] Whale detector: a time limit on shutdown. With the broker down,
       `consumer.stop()` hung indefinitely; each client now gets 5 s.
-- [ ] `useLiveCandles`: reconnect with backoff, like `useWhaleTrades`.
-      Today the chart stops updating after any backend restart until the
-      page is reloaded.
+- [x] `useLiveCandles`: reconnect with backoff, like `useWhaleTrades`.
+      The chart stopped updating after any backend restart until the
+      page was reloaded; both hooks now share `lib/reconnectingSocket.js`.
 - [ ] `tests/`: a `pytest` suite against real Kafka, Redis and Postgres
       covering everything built so far, plus frontend tests once
       `frontend/src/lib/` is committed, with a one-command runner.
@@ -193,6 +193,13 @@ the UI works end to end; gold runs with footprint and whale detection off.
 - [ ] Frontend backend URLs from environment variables (TODO in
       `frontend/src/config.js`).
 - [ ] Postgres connection pool (TODO in `backend/postgres_client.py`).
+- [ ] Chart: fill in the bars missed while the live socket was
+      disconnected. Since Phase 1 it reconnects and resumes with the
+      minute in progress, but minutes that closed entirely during a
+      longer outage stay missing until a reload (a backend restart's
+      second or two misses nothing). Needs a fetch since the last bar,
+      merged like a scroll-back page, plus reseeding
+      `useTimeframeCandle`'s open bucket.
 - [ ] Optional (suggestions in the diagram): a batch scheduler and a
       Gold → Postgres sync.
 
