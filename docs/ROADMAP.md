@@ -83,8 +83,8 @@ show anything useful; its replay and backtest nodes land in Phase 4.
       respects Telegram's rate limits when several whales land at once,
       takes its token from an environment variable (never committed), and
       gets a `scripts/dev.sh` window.
-- [ ] Whale detector: a time limit on shutdown. With the broker down,
-      `consumer.stop()` hangs indefinitely today.
+- [x] Whale detector: a time limit on shutdown. With the broker down,
+      `consumer.stop()` hung indefinitely; each client now gets 5 s.
 - [ ] `useLiveCandles`: reconnect with backoff, like `useWhaleTrades`.
       Today the chart stops updating after any backend restart until the
       page is reloaded.

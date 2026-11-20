@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from decimal import Decimal
 
 from config.settings import WHALE_ALERTS_TOPIC
 
 from alert_publisher import AlertPublisher
-from jobs.whale_detector import WhaleDetector
+from jobs.whale_detector import WhaleDetector, stop_within
 
 from helpers import TopicTail, make_trade, wait_until_positioned
 
@@ -126,3 +127,29 @@ async def test_one_failed_hand_off_does_not_stop_detection(trade_producer, symbo
         await _stop_detector(detector, task)
 
     assert delivered == [None, "second"]
+
+
+# --- bounded shutdown --------------------------------------------------------
+# With the broker down, aiokafka's consumer.stop() retries its final commit
+# forever. Checked by hand too: Ctrl+C with the broker stopped now exits in
+# about 6 s (5 s for the consumer, then the publisher) instead of hanging.
+
+
+async def test_stop_within_gives_up_on_a_stop_that_never_returns():
+    async def never_returns() -> None:
+        await asyncio.Event().wait()
+
+    started = time.monotonic()
+    assert await stop_within(never_returns(), "Stuck client", timeout=0.2) is False
+    assert time.monotonic() - started < 1
+
+
+async def test_stop_within_lets_a_prompt_stop_finish():
+    stopped = []
+
+    async def prompt() -> None:
+        await asyncio.sleep(0.01)
+        stopped.append(True)
+
+    assert await stop_within(prompt(), "Client", timeout=5) is True
+    assert stopped == [True]
