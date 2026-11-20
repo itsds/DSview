@@ -11,12 +11,33 @@ jobs (candle_aggregator.py, indicators.py, footprint.py) are where
 Spark earns its keep.
 
 Consumes the normalized trade events ingestion/producer.py already
-published to `market.trades.raw` and logs any trade whose notional
-value (price * quantity) meets or exceeds WHALE_THRESHOLD_USD. Reads
-the raw JSON payload directly rather than importing
-ingestion/schema.py's pydantic models — once an event is on the wire
-it's just JSON, and a consumer shouldn't need to share Python types
-with a producer across a Kafka topic boundary.
+published to `market.trades.raw`, and for every trade whose notional
+value (price * quantity) meets or exceeds WHALE_THRESHOLD_USD, logs it
+and hands an alert to the on_whale callback — which _main() wires to
+alert_publisher.py, publishing it to `alerts.whales` (WHALE_ALERTS_TOPIC)
+keyed by symbol. Reads the raw JSON payload directly rather than
+importing ingestion/schema.py's pydantic models — once an event is on
+the wire it's just JSON, and a consumer shouldn't need to share Python
+types with a producer across a Kafka topic boundary.
+
+Each alert on `alerts.whales` is one JSON object:
+
+    {"event_type": "whale_trade", "exchange": "binance", "symbol": "BTCUSDT",
+     "trade_id": "...", "side": "buy" | "sell",
+     "price": "97000.1", "quantity": "2.5",   # exactly as the trade carried them
+     "notional": "242500.25", "threshold": "100000",
+     "event_time": "...",                     # when the trade happened (exchange clock)
+     "detected_at": "..."}                    # when this detector flagged it (UTC)
+
+Decimals are strings, like every other payload in the pipeline, so no
+consumer loses precision to a float.
+
+Delivery is best-effort, not exactly-once: each alert is published and
+acknowledged before the next trade is read, but the consumer
+auto-commits its offsets. So a publish that still fails after the
+producer's own retries is logged, alert included, and skipped; and a
+crash can re-read the last few seconds of trades and repeat their
+alerts. Consumers that mind duplicates dedupe on (exchange, trade_id).
 
 Author: @DS
 """
@@ -27,10 +48,20 @@ import asyncio
 import json
 import logging
 import signal
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from aiokafka import AIOKafkaConsumer
+
+from config.settings import (
+    KAFKA_BOOTSTRAP_SERVERS,
+    TRADES_TOPIC,
+    WHALE_ALERTS_TOPIC,
+    WHALE_THRESHOLD_USD,
+)
+
+from alert_publisher import AlertPublisher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,11 +69,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# TODO(@DS): move to config/settings.py once the config/ module is scaffolded.
-KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
-TRADES_TOPIC = "market.trades.raw"
 CONSUMER_GROUP_ID = "dsview-whale-detector"
-WHALE_THRESHOLD_USD = Decimal("100000")
+ALERT_EVENT_TYPE = "whale_trade"
+
+WhaleAlert = Dict[str, Any]
+OnWhale = Callable[[WhaleAlert], Awaitable[None]]
+
+
+def _decimal_str(value: Decimal) -> str:
+    """Plain notation, no trailing zeros: never "1.94E+5" or "194000.2000000000000000"."""
+    return format(value.normalize(), "f")
 
 
 class WhaleDetector:
@@ -50,11 +86,13 @@ class WhaleDetector:
 
     def __init__(
         self,
+        on_whale: OnWhale,
         bootstrap_servers: str = KAFKA_BOOTSTRAP_SERVERS,
         topic: str = TRADES_TOPIC,
         group_id: str = CONSUMER_GROUP_ID,
         threshold_usd: Decimal = WHALE_THRESHOLD_USD,
     ) -> None:
+        self._on_whale = on_whale
         self._bootstrap_servers = bootstrap_servers
         self._topic = topic
         self._group_id = group_id
@@ -91,60 +129,89 @@ class WhaleDetector:
             raise RuntimeError("WhaleDetector.start() must be called before run()")
 
         async for message in self._consumer:
-            self._handle_message(message.value)
+            alert = self._handle_message(message.value)
+            if alert is None:
+                continue
+            try:
+                await self._on_whale(alert)
+            except Exception:
+                # The alert is already in the log (see _handle_message); one
+                # failed hand-off mustn't stop whale detection for good.
+                logger.exception("Failed to deliver whale alert, skipping: %s", alert)
 
-    def _handle_message(self, raw_value: bytes) -> None:
+    def _handle_message(self, raw_value: bytes) -> Optional[WhaleAlert]:
+        """Return a whale alert if this message is a trade at or over the threshold, else None."""
         try:
             payload = json.loads(raw_value)
         except json.JSONDecodeError:
             logger.exception("Failed to decode trade message, skipping")
-            return
+            return None
 
         if payload.get("event_type") != "trade":
-            return  # depth updates carry no trade size, nothing to check
+            return None  # depth updates carry no trade size, nothing to check
 
         try:
+            symbol = payload["symbol"]  # required: it's the alert's partition key
             notional = Decimal(str(payload["price"])) * Decimal(str(payload["quantity"]))
         except (KeyError, InvalidOperation):
             logger.exception("Malformed trade payload, skipping: %s", payload)
-            return
+            return None
 
-        if notional >= self._threshold_usd:
-            # TODO(@DS): push to alerts/telegram_bot.py once it exists;
-            # logging is the only sink for now.
-            logger.warning(
-                "WHALE TRADE: %s %s %s @ %s (notional=$%.2f, side=%s)",
-                payload.get("exchange"),
-                payload.get("symbol"),
-                payload.get("quantity"),
-                payload.get("price"),
-                notional,
-                payload.get("side"),
-            )
+        if notional < self._threshold_usd:
+            return None
+
+        logger.warning(
+            "WHALE TRADE: %s %s %s @ %s (notional=$%.2f, side=%s)",
+            payload.get("exchange"),
+            symbol,
+            payload.get("quantity"),
+            payload.get("price"),
+            notional,
+            payload.get("side"),
+        )
+        return {
+            "event_type": ALERT_EVENT_TYPE,
+            "exchange": payload.get("exchange"),
+            "symbol": symbol,
+            "trade_id": payload.get("trade_id"),
+            "side": payload.get("side"),
+            "price": str(payload["price"]),
+            "quantity": str(payload["quantity"]),
+            "notional": _decimal_str(notional),
+            "threshold": _decimal_str(self._threshold_usd),
+            "event_time": payload.get("event_time"),
+            "detected_at": datetime.now(timezone.utc).isoformat(),
+        }
 
 
 async def _main() -> None:
-    detector = WhaleDetector()
-    await detector.start()
+    # Publisher first, so no trade is consumed before an alert could be sent.
+    publisher = AlertPublisher(topic=WHALE_ALERTS_TOPIC, client_id="dsview-whale-detector")
+    await publisher.start()
+    try:
+        detector = WhaleDetector(on_whale=publisher.publish)
+        await detector.start()
 
-    stop_event = asyncio.Event()
+        stop_event = asyncio.Event()
 
-    def _handle_shutdown_signal() -> None:
-        logger.info("Shutdown signal received")
-        stop_event.set()
+        def _handle_shutdown_signal() -> None:
+            logger.info("Shutdown signal received")
+            stop_event.set()
 
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _handle_shutdown_signal)
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _handle_shutdown_signal)
 
-    run_task = asyncio.create_task(detector.run())
+        run_task = asyncio.create_task(detector.run())
 
-    await stop_event.wait()
+        await stop_event.wait()
 
-    logger.info("Stopping whale detector...")
-    run_task.cancel()
-    await asyncio.gather(run_task, return_exceptions=True)
-    await detector.stop()
+        logger.info("Stopping whale detector...")
+        run_task.cancel()
+        await asyncio.gather(run_task, return_exceptions=True)
+        await detector.stop()
+    finally:
+        await publisher.stop()
     logger.info("Whale detector stopped cleanly")
 
 

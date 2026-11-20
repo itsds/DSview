@@ -23,7 +23,6 @@ from postgres_client import CandleHistoryReader
 
 router = APIRouter()
 
-# TODO(@DS): move to config/settings.py once the config/ module is scaffolded.
 DEFAULT_LIMIT = 200
 # One day of 1m candles — what frontend/src/hooks/useTimeframeCandle.js
 # fetches to seed a live 1D candle that's already in progress.

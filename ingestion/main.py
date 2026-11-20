@@ -18,6 +18,8 @@ import logging
 import signal
 from typing import List
 
+from config.settings import KAFKA_BOOTSTRAP_SERVERS, SYMBOLS
+
 from base_client import BaseExchangeClient
 from binance_client import BinanceClient
 from producer import MarketDataProducer
@@ -28,10 +30,6 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-# TODO(@DS): move to config/settings.py once the config/ module is scaffolded.
-SYMBOLS = ["BTCUSDT"]
-KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
 
 
 async def run() -> None:

@@ -14,10 +14,7 @@
 
 import { useEffect, useState } from "react";
 
-// TODO(@DS): move to a config module once the frontend has one; also
-// needs to become an env-driven URL before this is ever deployed anywhere
-// but localhost.
-const BACKEND_WS_URL = "ws://localhost:8000";
+import { BACKEND_WS_URL } from "../config.js";
 
 export function useLiveCandles(symbol) {
   const [candle, setCandle] = useState(null);

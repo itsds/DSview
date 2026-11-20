@@ -61,3 +61,94 @@
   padding: 4px 12px;
   color: var(--color-text-muted);
 }
+
+/* Whale feed */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 8px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  --dot: var(--color-text-disabled);
+}
+
+.status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dot);
+}
+
+.status[data-status="live"] {
+  --dot: var(--color-up);
+}
+
+.status[data-status="reconnecting"] {
+  --dot: var(--color-warning);
+}
+
+.caption {
+  margin: -4px 0 4px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.whales {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.whale {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 2px;
+  padding: 6px 12px;
+}
+
+.whale + .whale {
+  border-top: 1px solid var(--color-border);
+}
+
+.side {
+  padding: 1px 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  border-radius: var(--radius-control);
+}
+
+.side[data-side="buy"] {
+  color: var(--color-up);
+  background: var(--color-up-soft);
+}
+
+.side[data-side="sell"] {
+  color: var(--color-down);
+  background: var(--color-down-soft);
+}
+
+.notional {
+  font-weight: 600;
+}
+
+.time {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.detail {
+  grid-column: 2 / 4;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

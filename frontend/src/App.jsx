@@ -6,7 +6,8 @@
  * drawing tool, magnet, indicators and their dialogs), and feeds the chart
  * its data: useCandleHistory.js backfills over REST, useLiveCandles.js
  * streams 1m candles over the WebSocket, and useTimeframeCandle.js rolls
- * that stream up to the selected timeframe. Drawings live in a per-symbol
+ * that stream up to the selected timeframe; useWhaleTrades.js feeds the
+ * right panel's whale list. Drawings live in a per-symbol
  * drawing store and indicators in useIndicators.js, both outliving chart
  * remounts, so they survive timeframe switches. The chart sits in an
  * ErrorBoundary so a chart error can't blank the whole page. Symbol
@@ -32,6 +33,7 @@ import { useCandleHistory } from "./hooks/useCandleHistory.js";
 import { useIndicators } from "./hooks/useIndicators.js";
 import { useLiveCandles } from "./hooks/useLiveCandles.js";
 import { useTimeframeCandle } from "./hooks/useTimeframeCandle.js";
+import { useWhaleTrades } from "./hooks/useWhaleTrades.js";
 
 const SYMBOL = "BTCUSDT";
 const DEFAULT_TIMEFRAME = "1m";
@@ -47,6 +49,7 @@ export default function App() {
   const history = useCandleHistory(SYMBOL, timeframe);
   const minuteCandle = useLiveCandles(SYMBOL);
   const candle = useTimeframeCandle(SYMBOL, timeframe, minuteCandle);
+  const whales = useWhaleTrades();
 
   const editing = indicators.indicators.find((indicator) => indicator.id === editingId) ?? null;
 
@@ -100,7 +103,12 @@ export default function App() {
         </ErrorBoundary>
       </main>
       <div className={styles.panel}>
-        <RightPanel symbol={SYMBOL} candle={minuteCandle} />
+        <RightPanel
+          symbol={SYMBOL}
+          candle={minuteCandle}
+          whaleTrades={whales.trades}
+          whaleStatus={whales.status}
+        />
       </div>
       <div className={styles.bottom}>
         <BottomBar />

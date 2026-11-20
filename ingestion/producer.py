@@ -24,6 +24,8 @@ from typing import Optional
 from aiokafka import AIOKafkaProducer
 from aiokafka.errors import KafkaError
 
+from config.settings import KAFKA_BOOTSTRAP_SERVERS
+
 from schema import MarketEvent, kafka_topic_for
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,7 @@ class MarketDataProducer:
 
     def __init__(
         self,
-        bootstrap_servers: str = "localhost:9092",
+        bootstrap_servers: str = KAFKA_BOOTSTRAP_SERVERS,
         client_id: str = "dsview-ingestion",
         acks: str = "all",
         linger_ms: int = 5,

@@ -22,7 +22,8 @@ streaming query against Kafka, not three.
 
 Run from streaming/ (not repo root, not from inside jobs/) so sibling
 modules resolve as bare imports, matching ingestion/'s flat import
-convention (see ingestion/main.py's docstring):
+convention (see ingestion/main.py's docstring), with the repo root on
+PYTHONPATH so config/ resolves too (see config/settings.py):
 
     cd streaming && python -m jobs.candle_aggregator
 

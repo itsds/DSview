@@ -34,11 +34,10 @@ from typing import Any, Mapping
 
 import redis
 
+from config.settings import REDIS_HOST, REDIS_PORT
+
 logger = logging.getLogger(__name__)
 
-# TODO(@DS): move to config/settings.py once the config/ module is scaffolded.
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
 # A stale key (aggregator crashed/stopped) should read as "no live data"
 # downstream rather than silently serve an arbitrarily old candle forever.
 CANDLE_KEY_TTL_SECONDS = 120

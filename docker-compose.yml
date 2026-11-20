@@ -25,7 +25,7 @@ services:
       - --kafka-addr=internal://0.0.0.0:9093,external://0.0.0.0:9092
       - --advertise-kafka-addr=internal://redpanda:9093,external://localhost:9092
     ports:
-      - "9092:9092"   # Kafka API (external) — matches KAFKA_BOOTSTRAP_SERVERS in ingestion/main.py
+      - "9092:9092"   # Kafka API (external) — matches KAFKA_BOOTSTRAP_SERVERS in config/settings.py
       - "9644:9644"   # Admin API, used by `rpk` for status/topic inspection
     volumes:
       - redpanda-data:/var/lib/redpanda/data
@@ -44,7 +44,7 @@ services:
     image: redis:7.4-alpine
     container_name: dsview-redis
     ports:
-      - "6379:6379"   # streaming/redis_sink.py writes here; matches CandleRedisSink's default
+      - "6379:6379"   # streaming/redis_sink.py writes here; matches REDIS_HOST/REDIS_PORT in config/settings.py
     # No volume: this holds only the latest candle per symbol (TTL'd, constantly
     # overwritten) — it's a serving cache, not the source of truth. Losing it on
     # restart just means a short gap until the next candle_aggregator.py batch.
@@ -71,7 +71,7 @@ services:
       POSTGRES_PASSWORD: dsview
       POSTGRES_DB: dsview
     ports:
-      - "5432:5432"   # storage/init_db.py and streaming/postgres_sink.py connect here
+      - "5432:5432"   # storage/init_db.py and streaming/postgres_sink.py connect here (POSTGRES_DSN in config/settings.py)
     volumes:
       - postgres-data:/var/lib/postgresql/data   # this IS the source of truth for candle history — keep it
 

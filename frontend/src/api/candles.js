@@ -9,10 +9,7 @@
  * Author: @DS
  */
 
-// TODO(@DS): move to a config module once the frontend has one; also
-// needs to become an env-driven URL before this is ever deployed anywhere
-// but localhost.
-const BACKEND_HTTP_URL = "http://localhost:8000";
+import { BACKEND_HTTP_URL } from "../config.js";
 
 // Candles per request. A page shorter than this means history has run out.
 export const HISTORY_PAGE_SIZE = 300;
