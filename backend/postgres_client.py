@@ -21,8 +21,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-# TODO(@DS): move to config/settings.py once the config/ module is scaffolded.
-POSTGRES_DSN = "postgresql://dsview:dsview@localhost:5432/dsview"
+from config.settings import POSTGRES_DSN
 
 ONE_MINUTE = timedelta(minutes=1)
 

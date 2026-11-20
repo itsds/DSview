@@ -26,8 +26,7 @@ from typing import Any, Mapping
 
 import psycopg
 
-# TODO(@DS): move to config/settings.py once the config/ module is scaffolded.
-POSTGRES_DSN = "postgresql://dsview:dsview@localhost:5432/dsview"
+from config.settings import POSTGRES_DSN
 
 _UPSERT_SQL = """
     INSERT INTO candles_1m

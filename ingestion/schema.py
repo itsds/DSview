@@ -21,6 +21,8 @@ from typing import List, Union
 
 from pydantic import BaseModel, Field
 
+from config.settings import DEPTH_TOPIC, TRADES_TOPIC
+
 
 class Exchange(str, Enum):
     """Supported upstream data sources. Extend as new adapters are added."""
@@ -99,10 +101,12 @@ def kafka_topic_for(event: MarketEvent) -> str:
 
     Keeping this here (rather than duplicating the mapping in producer.py
     and in every client) means adding a new event type only requires a
-    change in one place.
+    change in one place. The topic names themselves live in
+    config/settings.py, because streaming/'s consumers subscribe to the
+    same names and must not import from ingestion/.
     """
     topic_map = {
-        EventType.TRADE: "market.trades.raw",
-        EventType.DEPTH: "market.depth.raw",
+        EventType.TRADE: TRADES_TOPIC,
+        EventType.DEPTH: DEPTH_TOPIC,
     }
     return topic_map[EventType(event.event_type)]

@@ -124,7 +124,9 @@ start() {
   wait_until redis redis_ready
   wait_until postgres postgres_ready
 
-  "$ROOT/.venv/bin/python" storage/init_db.py
+  # Every Python service imports config/settings.py from the repo root while
+  # running from inside its own folder, so the root goes on PYTHONPATH.
+  PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" storage/init_db.py
 
   local service name dir cmd first=1
   for service in "${SERVICES[@]}"; do
@@ -135,7 +137,9 @@ start() {
     else
       tmux new-window -t "$SESSION" -n "$name" -c "$ROOT/$dir"
     fi
-    tmux send-keys -t "$SESSION:$name" "source '$VENV_ACTIVATE' && $cmd" C-m
+    # PYTHONPATH is set in each window's shell, not exported by this script:
+    # a tmux server that's already running wouldn't pass it to new windows.
+    tmux send-keys -t "$SESSION:$name" "source '$VENV_ACTIVATE' && export PYTHONPATH='$ROOT' && $cmd" C-m
     if [[ "$name" == "ingestion" ]]; then
       sleep "$INGESTION_HEADSTART_SECONDS"
     fi

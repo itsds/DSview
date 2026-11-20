@@ -8,9 +8,10 @@ Not a migration tool — there's only one table so far and no schema-change
 history to manage yet. Revisit with a real migration tool (e.g. Alembic)
 once that stops being true.
 
-Run once, after `docker compose up -d`:
+Run once, after `docker compose up -d`, from the repo root (which must
+be on PYTHONPATH for config/ to import — see config/settings.py):
 
-    python storage/init_db.py
+    PYTHONPATH=. python storage/init_db.py
 
 Author: @DS
 """
@@ -21,8 +22,7 @@ from pathlib import Path
 
 import psycopg
 
-# TODO(@DS): move to config/settings.py once the config/ module is scaffolded.
-POSTGRES_DSN = "postgresql://dsview:dsview@localhost:5432/dsview"
+from config.settings import POSTGRES_DSN
 
 DDL_DIR = Path(__file__).parent / "ddl"
 

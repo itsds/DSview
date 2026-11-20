@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# TODO(@DS): move to config/settings.py once the config/ module is scaffolded;
-# also make timeframe a query param once more than "1m" exists.
+# The only timeframe candle_aggregator.py writes (CandleRedisSink's default).
+# TODO(@DS): make timeframe a query param once more than "1m" exists.
 DEFAULT_TIMEFRAME = "1m"
 
 

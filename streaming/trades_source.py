@@ -15,11 +15,9 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import DecimalType
 
-from schemas import TRADE_EVENT_SCHEMA
+from config.settings import KAFKA_BOOTSTRAP_SERVERS, TRADES_TOPIC
 
-# TODO(@DS): move to config/settings.py once the config/ module is scaffolded.
-KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
-TRADES_TOPIC = "market.trades.raw"
+from schemas import TRADE_EVENT_SCHEMA
 
 # price/quantity arrive as strings (see schemas.py); this is precision
 # enough for BTCUSDT-scale prices/quantities without losing accuracy.

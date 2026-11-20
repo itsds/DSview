@@ -31,21 +31,24 @@ candle_aggregator.py, ingestion, and Redpanda alongside this.
   refine in real time — not just its final value — is the whole point;
   that's why Gold can't just read from candle_aggregator.py's output.
 
-Run from streaming/ (see candle_aggregator.py's docstring for why):
+Run from streaming/ (see candle_aggregator.py's docstring for why), with
+the repo root on PYTHONPATH:
 
     cd streaming && python -m jobs.storage_writer
+
+Writes under config/settings.py's DATA_ROOT (storage/data/ by default).
 
 Author: @DS
 """
 
 from __future__ import annotations
 
+from config.settings import DATA_ROOT
+
 from candle_windowing import build_candles
 from spark_session import get_spark_session
 from trades_source import read_trades_stream
 
-# TODO(@DS): move to config/settings.py once the config/ module is scaffolded.
-DATA_ROOT = "../storage/data"
 CHECKPOINT_ROOT = f"{DATA_ROOT}/_checkpoints"
 DEDUP_WATERMARK_DELAY = "10 seconds"
 

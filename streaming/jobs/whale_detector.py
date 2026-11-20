@@ -32,17 +32,15 @@ from typing import Optional
 
 from aiokafka import AIOKafkaConsumer
 
+from config.settings import KAFKA_BOOTSTRAP_SERVERS, TRADES_TOPIC, WHALE_THRESHOLD_USD
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# TODO(@DS): move to config/settings.py once the config/ module is scaffolded.
-KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
-TRADES_TOPIC = "market.trades.raw"
 CONSUMER_GROUP_ID = "dsview-whale-detector"
-WHALE_THRESHOLD_USD = Decimal("100000")
 
 
 class WhaleDetector:

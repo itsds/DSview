@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 DSView — a real-time, multi-asset trading data pipeline (Kafka, Spark Structured Streaming, FastAPI) with custom volume footprint, whale tracking, and technical indicators.
 
-`ingestion/`, `streaming/`, `storage/`, `backend/`, and `frontend/` all have real implementation: live Binance trades → Redpanda → Spark → Redis (live state) + Postgres/Parquet (history) → FastAPI (WebSocket + REST) → a `lightweight-charts` chart that backfills history on load, then live-updates. Not built yet: technical indicators in Spark (the chart computes them in the browser for now — see `frontend/src/indicators/`), volume footprint, alerts, and the other planned top-level folders (`config/`, `tests/`, `data_quality/`, `observability/`).
+`ingestion/`, `streaming/`, `storage/`, `backend/`, and `frontend/` all have real implementation: live Binance trades → Redpanda → Spark → Redis (live state) + Postgres/Parquet (history) → FastAPI (WebSocket + REST) → a `lightweight-charts` chart that backfills history on load, then live-updates. Not built yet: technical indicators in Spark (the chart computes them in the browser for now — see `frontend/src/indicators/`), volume footprint, alerts, and the other planned top-level folders (`tests/`, `data_quality/`, `observability/`).
 
 `docs/architecture.html` maps the whole pipeline: ten left-to-right stages, four lanes (hot path, Medallion lakehouse, whale alerts, order book), every component and every data movement, each marked built / roadmap / suggested, plus a table of all 66 movements. One self-contained file — open it in a browser (it sketches with rough.js from a CDN and falls back to plain boxes offline). When a stage lands, change that node's `status` in the file's `NODES` array rather than redrawing anything.
 
@@ -27,7 +27,11 @@ cd frontend && npm install
 ./scripts/dev.sh stop   # Ctrl+C every service, then `docker compose stop`
 ```
 
-The individual commands, for running a single service by hand:
+The individual commands, for running a single service by hand. Every Python service imports `config/settings.py` from the repo root while running from inside its own folder, so first put the repo root on `PYTHONPATH`, once per shell (`dev.sh` does this itself, and PyCharm adds the project root by default):
+
+```bash
+export PYTHONPATH="$PWD"   # from the repo root
+```
 
 Local infra (Redpanda + its web Console at `http://localhost:8080`, Redis + RedisInsight at `http://localhost:5540` — add a connection there pointing at host `redis`, port `6379` — and Postgres):
 
@@ -76,13 +80,15 @@ There is no test suite, linter, or build step configured yet anywhere in the rep
 
 ## Architecture
 
+**`config/settings.py`** is the one config module every Python service imports (`from config.settings import ...`): `SYMBOLS`, the Kafka broker, Redis host/port, the Postgres DSN, the Parquet `DATA_ROOT`, the whale threshold and the CORS origins. Each can be overridden by a `DSVIEW_*` environment variable, and the defaults match `docker-compose.yml`, so local dev needs none. The Kafka topic names live there too but are deliberately not overridable — producer and consumers must agree on them. New deployment config (hosts, paths, credentials, thresholds) goes there, never into a module constant; a constant that tunes one module and is explained in place (the Redis key TTL, watermark delays, the REST page limits, the timeframe table) stays in its module. It's dependency-free on purpose: every service imports it, so it can't pull in a library one of them doesn't install.
+
 The ingestion layer follows a deliberate SRP/OCP/DIP split — read `ingestion/base_client.py`'s and `ingestion/producer.py`'s module docstrings before changing the wiring, they explain the reasoning:
 
-- **`schema.py`** is the canonical contract. Every exchange adapter normalizes its wire format into `TradeEvent` / `DepthUpdate` (union type `MarketEvent`) before anything else sees the data. `kafka_topic_for()` is the single place that maps an event type to a Kafka topic — add new topics here, not per-caller.
+- **`schema.py`** is the canonical contract. Every exchange adapter normalizes its wire format into `TradeEvent` / `DepthUpdate` (union type `MarketEvent`) before anything else sees the data. `kafka_topic_for()` is the single place that maps an event type to a Kafka topic — add new topics here, not per-caller (the topic name itself goes in `config/settings.py`, because `streaming/` subscribes to the same names and must not import from `ingestion/`).
 - **`base_client.py`** defines `BaseExchangeClient`, an abstract WebSocket client that owns connection lifecycle and exponential-backoff reconnect. It knows nothing about Kafka or any specific exchange. Subclasses implement only `ws_url`, `build_subscription_message()`, and `parse_message()`. It depends on an injected `on_event` async callback rather than importing the producer directly — this is what keeps ingestion testable without a broker.
 - **`binance_client.py`** is the reference implementation of that contract (first and currently only exchange adapter). `Exchange` enum in `schema.py` already anticipates Coinbase and Kraken — new exchanges should be added the same way: a new subclass of `BaseExchangeClient`, no changes needed to `base_client.py`.
 - **`producer.py`** (`MarketDataProducer`) is the sole boundary between ingestion and Kafka — a thin async wrapper over `AIOKafkaProducer`. Exchange clients never touch it directly; they only ever call the `on_event` callback they were constructed with. Partitions by symbol (`event.symbol` as the Kafka key) to preserve per-instrument ordering for downstream windowed aggregations in Spark.
-- **`main.py`** is the only file that imports both a concrete exchange client and the producer, wiring them together and running clients concurrently under asyncio with graceful SIGINT/SIGTERM shutdown. `SYMBOLS` and `KAFKA_BOOTSTRAP_SERVERS` are hardcoded here with a `TODO(@DS)` to move them into a `config/settings.py` module once it exists — check whether that module has been scaffolded before adding more hardcoded config here.
+- **`main.py`** is the only file that imports both a concrete exchange client and the producer, wiring them together and running clients concurrently under asyncio with graceful SIGINT/SIGTERM shutdown. It reads `SYMBOLS` and `KAFKA_BOOTSTRAP_SERVERS` from `config/settings.py`.
 
 When extending ingestion: normalize to `schema.py` types, keep new exchange adapters as `BaseExchangeClient` subclasses in their own file, and don't let Kafka-specific concerns leak upstream of `producer.py`.
 

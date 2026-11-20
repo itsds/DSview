@@ -16,9 +16,7 @@ from typing import AsyncIterator, Optional
 
 import redis.asyncio as redis
 
-# TODO(@DS): move to config/settings.py once the config/ module is scaffolded.
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
+from config.settings import REDIS_HOST, REDIS_PORT
 
 
 class CandleRedisReader:
