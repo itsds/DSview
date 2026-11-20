@@ -18,8 +18,11 @@ Built and running end to end: live Binance trades → Redpanda → Spark
 FastAPI (live candles over WebSocket, history over REST) → a
 `lightweight-charts` chart with backfill, scroll-back, six timeframes,
 drawing tools and browser-computed indicators. Whale trades flow from the
-detector to the `alerts.whales` topic, out through `/ws/whales`, and into
-the right panel. All hardcoded config lives in `config/settings.py`.
+detector to the `alerts.whales` topic, out through `/ws/whales` into the
+right panel, and through the Telegram bot to your phone. All hardcoded
+config lives in `config/settings.py`. `./scripts/test.sh` runs a pytest
+suite over real Kafka, Redis and Postgres plus the frontend's Vitest
+tests, and GitHub Actions runs it on every push.
 
 ## How a phase runs
 
@@ -88,9 +91,10 @@ show anything useful; its replay and backtest nodes land in Phase 4.
 - [x] `useLiveCandles`: reconnect with backoff, like `useWhaleTrades`.
       The chart stopped updating after any backend restart until the
       page was reloaded; both hooks now share `lib/reconnectingSocket.js`.
-- [ ] `tests/`: a `pytest` suite against real Kafka, Redis and Postgres
+- [x] `tests/`: a `pytest` suite against real Kafka, Redis and Postgres
       covering everything built so far, plus frontend tests once
-      `frontend/src/lib/` is committed, with a one-command runner.
+      `frontend/src/lib/` is committed, with a one-command runner
+      (`./scripts/test.sh`).
 - [x] GitHub Actions running the suite on every push (decision 3 below):
       `.github/workflows/tests.yml`.
 
@@ -175,6 +179,11 @@ ratio shows live.
 - [ ] Per-asset feature flags; gold (XAU-USD), with footprint and whale
       detection off.
 - [ ] Per-symbol whale thresholds.
+- [ ] Silver: deduplicate on `(exchange, symbol, trade_id)`, not `trade_id`
+      alone (`streaming/jobs/storage_writer.py`). Binance numbers trades
+      per symbol, so once a second symbol flows, two trades can share an
+      id and Silver would drop one. Found in Phase 1; harmless while
+      BTCUSDT is the only symbol.
 - [ ] Price formatting from each symbol's tick size (TODO in `Legend.jsx`).
 - [ ] A timeframe query parameter on `/ws/candles` (TODO in `routers/ws.py`).
 
