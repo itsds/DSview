@@ -100,3 +100,8 @@ CORS_ALLOWED_ORIGINS: List[str] = _env_list("CORS_ALLOWED_ORIGINS", ["http://loc
 # these; streaming/ consumers subscribe to them by the same names.
 TRADES_TOPIC = "market.trades.raw"
 DEPTH_TOPIC = "market.depth.raw"
+
+# streaming/jobs/whale_detector.py publishes each flagged trade here (see its
+# docstring for the message shape); the Telegram bot and the backend's
+# /ws/whales are meant to consume it.
+WHALE_ALERTS_TOPIC = "alerts.whales"

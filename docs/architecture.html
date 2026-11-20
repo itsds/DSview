@@ -624,11 +624,12 @@ NODES.push(
 
   /* ---------- alerts ---------- */
   { id: "wd_whale", col: "process", lane: "alerts", kind: "box", color: C.spark, status: "built", flows: ["alerts"],
-    title: "whale_detector.py", lines: ["plain asyncio aiokafka consumer", "group dsview-whale-detector · latest", "notional = price × qty ≥ $100,000", "today: writes a log line"],
+    title: "whale_detector.py", lines: ["plain asyncio aiokafka consumer", "group dsview-whale-detector · latest", "notional = price × qty ≥ $100,000", "logs it, publishes an alert"],
     code: "streaming/jobs/whale_detector.py",
     what: "Deliberately not Spark: judging one trade against a threshold needs no window and no state, so a JVM and a micro-batch clock would be pure overhead. It was the first milestone to run end to end." },
-  { id: "t_alerts", col: "store", lane: "alerts", dx: 0, w: 350, kind: "pill", color: C.bus, status: "planned", flows: ["alerts"],
-    title: "alerts.whales", lines: ["same Redpanda broker"],
+  { id: "t_alerts", col: "store", lane: "alerts", dx: 0, w: 350, kind: "pill", color: C.bus, status: "built", flows: ["alerts"],
+    title: "alerts.whales", lines: ["nothing consumes it yet"],
+    code: "streaming/alert_publisher.py",
     what: "Putting alerts on a topic rather than calling Telegram from the detector keeps fan-out free: the bot, the API and anything later all subscribe." },
   { id: "t_dlq", col: "store", lane: "alerts", dx: 0, w: 350, kind: "pill", color: C.bus, status: "suggested", flows: ["alerts"],
     title: "market.trades.dlq", lines: ["malformed payloads, kept not dropped"],
@@ -643,7 +644,7 @@ NODES.push(
   { id: "c_whales", col: "ui", lane: "alerts", kind: "box", color: C.ui, status: "built", tag: "waiting on the feed", flows: ["alerts","hot"],
     title: "RightPanel", lines: ['whale list says "Not connected yet"', "watchlist price is live already"],
     code: "frontend/src/components/layout/RightPanel.jsx",
-    what: "The panel exists and is honest about it: the watchlist row is priced off the live candle stream, the whale list stays empty until the detector publishes somewhere the backend can read." },
+    what: "The panel exists and is honest about it: the watchlist row is priced off the live candle stream, the whale list stays empty until the backend serves alerts.whales over /ws/whales." },
   { id: "c_phone", col: "ui", lane: "alerts", kind: "box", color: C.ui, status: "planned", flows: ["alerts"],
     title: "Telegram on your phone", lines: ["away from the desk"], what: "The one output that does not need the app open." },
 
@@ -792,8 +793,8 @@ const EDGES = [
   /* ---- whale alerts ---- */
   { from: "t_trades", to: "wd_whale", group: "alerts", status: "built", flows: ["alerts"],
     label: "every trade, in order", what: "Trade JSON, per-symbol order preserved by the key", how: "aiokafka consumer group, offsets latest", when: "per trade" },
-  { from: "wd_whale", to: "t_alerts", group: "alerts", status: "planned", flows: ["alerts"],
-    label: "whale events", what: "Trades over $100,000 notional", how: "Kafka produce", when: "a handful a day" },
+  { from: "wd_whale", to: "t_alerts", group: "alerts", status: "built", flows: ["alerts"],
+    label: "whale events", what: "One whale_trade JSON per trade at or over $100,000 notional (WHALE_THRESHOLD_USD)", how: "aiokafka producer, acks=all, idempotent, key = symbol", when: "per whale trade" },
   { from: "wd_whale", to: "t_dlq", group: "alerts", status: "suggested", flows: ["alerts"],
     label: "unparseable payloads", what: "Messages that failed to decode, kept instead of logged and dropped", how: "Kafka produce", when: "rarely, and that is the point" },
   { from: "t_alerts", to: "tg_bot", group: "alerts", status: "planned", flows: ["alerts"], label: "consume", what: "Whale events", how: "Kafka consumer", when: "per alert" },
