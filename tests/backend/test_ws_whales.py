@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from functools import partial
 
 import pytest
@@ -32,7 +33,24 @@ def _alert(symbol: str, trade_id: str) -> dict:
     return {"event_type": "whale_trade", "exchange": "binance", "symbol": symbol, "trade_id": trade_id}
 
 
-def test_replays_the_backlog_oldest_first_then_pushes_live_alerts(client, kafka_topics, symbol):
+@pytest.fixture
+def reader_closed(monkeypatch) -> threading.Event:
+    """Set once the route's WhaleAlertReader stream has finished, i.e. its Kafka consumer is closed."""
+    closed = threading.Event()  # the app runs in TestClient's own thread
+
+    class TrackedReader(WhaleAlertReader):
+        async def stream(self, backlog):
+            try:
+                async for alert in super().stream(backlog):
+                    yield alert
+            finally:
+                closed.set()
+
+    monkeypatch.setattr("routers.whales.WhaleAlertReader", TrackedReader)
+    return closed
+
+
+def test_replays_the_backlog_oldest_first_then_pushes_live_alerts(client, kafka_topics, symbol, reader_closed):
     _publish(*(_alert(symbol, str(i)) for i in range(3)))
 
     with client.websocket_connect("/ws/whales?backlog=3") as ws:
@@ -41,6 +59,12 @@ def test_replays_the_backlog_oldest_first_then_pushes_live_alerts(client, kafka_
 
         _publish(_alert(symbol, "live"))
         assert json.loads(ws.receive_text()) == _alert(symbol, "live")
+
+        # A closed tab releases its consumer at once, not at the next whale.
+        # (Disconnecting by hand and waiting also keeps TestClient from
+        # cancelling the handler mid-cleanup, which uvicorn never does.)
+        ws.close()
+        assert reader_closed.wait(timeout=10), "the Kafka consumer outlived the socket"
 
 
 def test_closes_with_1011_when_kafka_is_unreachable(client, monkeypatch, closed_port):
