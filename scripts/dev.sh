@@ -23,6 +23,10 @@
 # run as the window's command, so a crashed service leaves its window open
 # with the traceback visible and the command one up-arrow away.
 #
+# Each window loads the repo root's .env first, if there is one: that's
+# where the Telegram bot's token and chat id live (gitignored; copy
+# .env.example). Without them the telegram window just says what's missing.
+#
 # Author: @DS
 
 set -euo pipefail
@@ -40,6 +44,7 @@ STOP_GRACE_SECONDS=5
 SERVICES=(
   "ingestion|ingestion|python main.py"
   "whales|streaming|python -m jobs.whale_detector"
+  "telegram|alerts|python telegram_bot.py"
   "candles|streaming|python -m jobs.candle_aggregator"
   "storage|streaming|python -m jobs.storage_writer"
   "backend|backend|uvicorn main:app --reload --port 8000"
@@ -137,9 +142,11 @@ start() {
     else
       tmux new-window -t "$SESSION" -n "$name" -c "$ROOT/$dir"
     fi
-    # PYTHONPATH is set in each window's shell, not exported by this script:
-    # a tmux server that's already running wouldn't pass it to new windows.
-    tmux send-keys -t "$SESSION:$name" "source '$VENV_ACTIVATE' && export PYTHONPATH='$ROOT' && $cmd" C-m
+    # PYTHONPATH and .env are set in each window's shell, not exported by
+    # this script: a tmux server that's already running wouldn't pass them
+    # to new windows. `set -a` exports everything .env assigns (bash and
+    # zsh alike); the token itself never appears in the window.
+    tmux send-keys -t "$SESSION:$name" "source '$VENV_ACTIVATE' && export PYTHONPATH='$ROOT' && if [ -f '$ROOT/.env' ]; then set -a; . '$ROOT/.env'; set +a; fi && $cmd" C-m
     if [[ "$name" == "ingestion" ]]; then
       sleep "$INGESTION_HEADSTART_SECONDS"
     fi

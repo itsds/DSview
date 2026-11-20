@@ -2,7 +2,7 @@
 settings.py
 
 DSView's one config module. Every service (ingestion/, streaming/,
-backend/, storage/) reads its broker address, Redis and Postgres
+backend/, storage/, alerts/) reads its broker address, Redis and Postgres
 locations, data paths, symbols, topic names and whale threshold from
 here instead of keeping its own copy.
 
@@ -93,6 +93,17 @@ WHALE_THRESHOLD_USD: Decimal = Decimal(_env("WHALE_THRESHOLD_USD", "100000"))
 # now. DSVIEW_CORS_ALLOWED_ORIGINS="https://a.example,https://b.example"
 CORS_ALLOWED_ORIGINS: List[str] = _env_list("CORS_ALLOWED_ORIGINS", ["http://localhost:5173"])
 
+# alerts/telegram_bot.py: the bot's token (from @BotFather) and the chat it
+# posts to. Secrets, so no defaults: set them in the environment, or in the
+# repo root's gitignored .env, which scripts/dev.sh loads (see .env.example).
+# DSVIEW_TELEGRAM_BOT_TOKEN, DSVIEW_TELEGRAM_CHAT_ID
+TELEGRAM_BOT_TOKEN: str = _env("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID: str = _env("TELEGRAM_CHAT_ID", "")
+
+# The Bot API's base URL. Only the tests point it elsewhere (at a fake
+# server). DSVIEW_TELEGRAM_API_URL
+TELEGRAM_API_URL: str = _env("TELEGRAM_API_URL", "https://api.telegram.org")
+
 
 # --- Pipeline contract (not overridable) -------------------------------------
 
@@ -103,5 +114,5 @@ DEPTH_TOPIC = "market.depth.raw"
 
 # streaming/jobs/whale_detector.py publishes each flagged trade here (see its
 # docstring for the message shape); backend/routers/whales.py serves it
-# over /ws/whales, and the Telegram bot will consume it too.
+# over /ws/whales, and alerts/telegram_bot.py sends it to Telegram.
 WHALE_ALERTS_TOPIC = "alerts.whales"

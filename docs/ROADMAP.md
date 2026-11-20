@@ -78,7 +78,7 @@ show anything useful; its replay and backtest nodes land in Phase 4.
 
 ## Phase 1 — finish whale tracking; make everything trustworthy
 
-- [ ] Telegram bot, `alerts/telegram_bot.py`: reads `alerts.whales` in its
+- [x] Telegram bot, `alerts/telegram_bot.py`: reads `alerts.whales` in its
       own consumer group, ignores repeats on `(exchange, trade_id)`,
       respects Telegram's rate limits when several whales land at once,
       takes its token from an environment variable (never committed), and
