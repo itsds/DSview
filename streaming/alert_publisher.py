@@ -11,8 +11,8 @@ reason ingestion's exchange clients take an on_event callback instead of
 the producer.
 
 Alerts go to a topic rather than straight to Telegram or the backend so
-fan-out stays free: the Telegram bot, the backend's /ws/whales and
-anything later each subscribe with their own consumer group, and the
+fan-out stays free: the backend's /ws/whales (backend/kafka_client.py),
+the Telegram bot and anything later each read it independently, and the
 detector never learns they exist.
 
 Each alert is keyed by symbol, like every market event (see

@@ -4,8 +4,8 @@
  * Watchlist and whale-trade feed down the right side. Only one symbol is
  * ingested so far (ingestion/main.py's SYMBOLS), so the watchlist is a
  * single row priced off the same live candle stream as the chart. The
- * whale feed stays empty until the backend serves the alerts.whales topic
- * (which whale_detector.py publishes to) over a WebSocket — not built yet.
+ * whale feed stays empty until this panel subscribes to the backend's
+ * /ws/whales (backend/routers/whales.py) — not wired up yet.
  *
  * Author: @DS
  */

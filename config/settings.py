@@ -102,6 +102,6 @@ TRADES_TOPIC = "market.trades.raw"
 DEPTH_TOPIC = "market.depth.raw"
 
 # streaming/jobs/whale_detector.py publishes each flagged trade here (see its
-# docstring for the message shape); the Telegram bot and the backend's
-# /ws/whales are meant to consume it.
+# docstring for the message shape); backend/routers/whales.py serves it
+# over /ws/whales, and the Telegram bot will consume it too.
 WHALE_ALERTS_TOPIC = "alerts.whales"

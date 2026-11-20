@@ -1,9 +1,10 @@
 """
 main.py
 
-Backend service entrypoint (FastAPI). Wires up both the WebSocket
-live-candle push (routers/ws.py) and the REST historical-candles endpoint
-(routers/candles.py, reading Postgres's candles_1m).
+Backend service entrypoint (FastAPI). Wires up the WebSocket
+live-candle push (routers/ws.py, from Redis), the REST historical-candles
+endpoint (routers/candles.py, reading Postgres's candles_1m) and the
+WebSocket whale-alert feed (routers/whales.py, from Kafka's alerts.whales).
 
 Run from backend/ (matching ingestion/streaming's flat-import
 convention), with the repo root on PYTHONPATH (see config/settings.py):
@@ -21,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config.settings import CORS_ALLOWED_ORIGINS
 
 from routers.candles import router as candles_router
+from routers.whales import router as whales_router
 from routers.ws import router as ws_router
 
 app = FastAPI(title="DSView Backend")
@@ -38,6 +40,7 @@ app.add_middleware(
 
 app.include_router(ws_router)
 app.include_router(candles_router)
+app.include_router(whales_router)
 
 
 @app.get("/health")
