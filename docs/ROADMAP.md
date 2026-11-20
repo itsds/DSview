@@ -52,8 +52,8 @@ then confirmed on the laptop for what only the laptop has.
 
 | Phase | Goal | Size | Status |
 |---|---|---|---|
-| 0 | Prerequisites (owner) | S | Not started |
-| 1 | Finish whale tracking; make everything trustworthy | M | Not started |
+| 0 | Prerequisites (owner) | S | Done |
+| 1 | Finish whale tracking; make everything trustworthy | M | In progress |
 | 2 | Technical indicators in Spark | L | Not started |
 | 3 | History backfill + volume footprint | XL | Not started |
 | 4 | Replay, backtest, long/short ratio | L | Not started |
@@ -69,10 +69,12 @@ show anything useful; its replay and backtest nodes land in Phase 4.
 
 ## Phase 0 — prerequisites (owner)
 
-- [ ] Commit `frontend/src/lib/` (`timeframes.js`, `keyboard.js`, `ids.js`)
+- [x] Commit `frontend/src/lib/` (`timeframes.js`, `keyboard.js`, `ids.js`)
       from the laptop. The root `.gitignore` hid it until commit `959afc1`,
-      so the frontend can't build from the repo until it's in.
-- [ ] Merge branch `claude/vibrant-edison-ql23n3` into `main`.
+      so the frontend can't build from the repo until it's in. Landed on
+      `main` as `81b164c`.
+- [x] Merge branch `claude/vibrant-edison-ql23n3` into `main` (pull
+      request #1).
 
 ## Phase 1 — finish whale tracking; make everything trustworthy
 
@@ -89,9 +91,23 @@ show anything useful; its replay and backtest nodes land in Phase 4.
 - [ ] `tests/`: a `pytest` suite against real Kafka, Redis and Postgres
       covering everything built so far, plus frontend tests once
       `frontend/src/lib/` is committed, with a one-command runner.
-- [ ] Optional: GitHub Actions running the suite on every push.
+- [ ] GitHub Actions running the suite on every push (decision 3 below).
 
-**Kickoff decisions:** the Telegram message format; whether to add CI.
+**Kickoff decisions** (made 2026-11-20):
+
+1. **Message format.** Each whale is a three-line card:
+
+   ```
+   🐋 BUY · BTCUSDT
+   $242.5K — 2.5 @ 97,000.10
+   Binance · 10:16:57 UTC
+   ```
+
+2. **What gets sent.** Every whale the right panel shows also goes to
+   Telegram. Whales within 10 seconds of each other are combined into one
+   message rather than one notification each.
+3. **CI: yes.** GitHub Actions runs the full test suite on every push,
+   with Kafka, Redis and Postgres as service containers.
 
 **Done when:** a live whale reaches both the phone and the right panel; the
 detector exits promptly on Ctrl+C even with the broker down; the chart
