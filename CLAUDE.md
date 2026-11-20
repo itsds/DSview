@@ -165,6 +165,8 @@ something genuinely useful for trading decisions.
 
 ## Feature roadmap (build in this order)
 
+`docs/ROADMAP.md` is the execution plan built from this list: what's left, grouped into phases, each with its tasks, kickoff decisions and a definition of done. Work from it, and tick tasks there as they land.
+
 1. **Whale tracking** — per-transaction size threshold filter, no windowing needed.
    Simplest, first end-to-end milestone.
 2. **Technical indicators** — EMA/RSI on tumbling windows via Spark Structured Streaming.
