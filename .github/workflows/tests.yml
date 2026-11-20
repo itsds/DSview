@@ -1,0 +1,110 @@
+# Runs DSView's whole test suite (scripts/test.sh) on every push.
+#
+# Kafka, Redis and Postgres run as service containers. Kafka is Apache
+# Kafka's own image rather than Redpanda: GitHub can't pass a command to a
+# service container, which Redpanda needs, while apache/kafka starts a
+# single-node broker advertising localhost:9092 by default. Same Kafka
+# protocol, same client code (see CLAUDE.md on Redpanda).
+#
+# Python 3.10 and JDK 17 match the dev laptop.
+
+name: Tests
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    services:
+      kafka:
+        image: apache/kafka:4.3.2
+        ports:
+          - 9092:9092
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-interval 5s
+          --health-timeout 20s
+          --health-retries 20
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: dsview
+          POSTGRES_PASSWORD: dsview   # throwaway CI database, like docker-compose.yml's
+          POSTGRES_DB: dsview_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dsview -d dsview_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DSVIEW_KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+      DSVIEW_REDIS_HOST: localhost
+      DSVIEW_REDIS_PORT: "6379"
+      DSVIEW_POSTGRES_DSN: postgresql://dsview:dsview@localhost:5432/dsview_test
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: "**/requirements.txt"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Spark resolves its Kafka connector from Maven Central into ~/.ivy2 on
+      # first use; the version is pinned in streaming/spark_session.py.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ivy2
+          key: ivy-${{ hashFiles('streaming/spark_session.py') }}
+
+      - name: Install Python dependencies
+        run: >-
+          pip install
+          -r ingestion/requirements.txt
+          -r streaming/requirements.txt
+          -r backend/requirements.txt
+          -r storage/requirements.txt
+          -r alerts/requirements.txt
+          -r tests/requirements.txt
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run the test suite
+        run: ./scripts/test.sh --no-docker

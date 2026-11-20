@@ -91,7 +91,8 @@ show anything useful; its replay and backtest nodes land in Phase 4.
 - [ ] `tests/`: a `pytest` suite against real Kafka, Redis and Postgres
       covering everything built so far, plus frontend tests once
       `frontend/src/lib/` is committed, with a one-command runner.
-- [ ] GitHub Actions running the suite on every push (decision 3 below).
+- [x] GitHub Actions running the suite on every push (decision 3 below):
+      `.github/workflows/tests.yml`.
 
 **Kickoff decisions** (made 2026-11-20):
 
