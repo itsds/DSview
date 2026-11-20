@@ -153,3 +153,42 @@ async def test_stop_within_lets_a_prompt_stop_finish():
 
     assert await stop_within(prompt(), "Client", timeout=5) is True
     assert stopped == [True]
+
+
+async def test_stop_within_survives_a_cancelled_error_leaked_from_inside_stop(caplog):
+    # What aiokafka's consumer.stop() does with the broker down: its fetcher
+    # re-raises the CancelledError of requests it has just cancelled.
+    async def leaks_cancellation() -> None:
+        raise asyncio.CancelledError()
+
+    assert await stop_within(leaks_cancellation(), "Leaky client", timeout=5) is False
+    assert "leaked CancelledError" in caplog.text
+
+
+async def test_stop_within_survives_a_stop_that_raises(caplog):
+    async def fails() -> None:
+        raise ConnectionError("broker gone")
+
+    assert await stop_within(fails(), "Failing client", timeout=5) is False
+    assert "broker gone" in caplog.text
+
+
+async def test_a_real_cancellation_of_the_caller_still_propagates():
+    stop_cancelled = asyncio.Event()
+
+    async def slow_stop() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            stop_cancelled.set()
+            raise
+
+    caller = asyncio.create_task(stop_within(slow_stop(), "Client", timeout=30))
+    await asyncio.sleep(0.05)
+    caller.cancel()
+    try:
+        await caller
+        raise AssertionError("the caller's cancellation was swallowed")
+    except asyncio.CancelledError:
+        pass
+    await asyncio.wait_for(stop_cancelled.wait(), 1)  # and the stop was cancelled with it

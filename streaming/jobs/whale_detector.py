@@ -195,21 +195,43 @@ class WhaleDetector:
         }
 
 
-async def stop_within(stop: Awaitable[None], what: str, timeout: float = SHUTDOWN_TIMEOUT_SECONDS) -> bool:
+async def stop_within(
+    stop: Awaitable[None], what: str, timeout: float = SHUTDOWN_TIMEOUT_SECONDS, verb: str = "close"
+) -> bool:
     """
-    Await `stop` for at most `timeout` seconds; True if it finished in time.
+    Await `stop` for at most `timeout` seconds; True if it finished cleanly.
 
     For closing a Kafka client at shutdown, which waits on the broker
     indefinitely when it's down (see the module docstring). Past the time
     limit `stop` is cancelled, logged and given up on, so the process can
-    exit anyway.
+    exit anyway; a `stop` that fails is logged and given up on too.
+
+    `stop` runs as a task of its own rather than under asyncio.wait_for():
+    with the broker down, aiokafka's consumer.stop() can raise a
+    CancelledError of its own making, which wait_for() passes on as if
+    this task had been cancelled, ending the process in a traceback. Here
+    it's just a failed close, while a real cancellation of the caller
+    still propagates. Python 3.10 has no other way to tell the two apart.
     """
+    task = asyncio.ensure_future(stop)
     try:
-        await asyncio.wait_for(stop, timeout)
-        return True
-    except asyncio.TimeoutError:
-        logger.warning("%s didn't close within %.0fs (broker unreachable?); exiting without it", what, timeout)
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+    except asyncio.CancelledError:
+        task.cancel()  # this task really was cancelled: take `stop` down with it
+        raise
+    if not done:
+        task.cancel()
+        await asyncio.wait({task}, timeout=1)  # let it unwind, but never wait on it for good
+        logger.warning("%s didn't %s within %.0fs (broker unreachable?); exiting without it", what, verb, timeout)
         return False
+    if task.cancelled() or task.exception() is not None:
+        # Cancelled from inside: aiokafka's consumer.stop() leaks the
+        # CancelledError of fetch requests it has just cancelled when the
+        # broker is unreachable (see backend/kafka_client.py's _stop()).
+        reason = "a leaked CancelledError" if task.cancelled() else repr(task.exception())
+        logger.warning("%s failed to %s (%s; broker unreachable?); exiting without it", what, verb, reason)
+        return False
+    return True
 
 
 async def _main() -> None:

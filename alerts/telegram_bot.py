@@ -213,20 +213,37 @@ def _summary(alert: Alert) -> str:
     return f"{alert.get('symbol')} {alert.get('side')} {format_usd(alert.get('notional'))} (trade {alert.get('trade_id')})"
 
 
-async def stop_within(stop: Awaitable[None], what: str, timeout: float = SHUTDOWN_TIMEOUT_SECONDS) -> bool:
+async def stop_within(
+    stop: Awaitable[None], what: str, timeout: float = SHUTDOWN_TIMEOUT_SECONDS, verb: str = "close"
+) -> bool:
     """
-    Await `stop` for at most `timeout` seconds; True if it finished in time.
+    Await `stop` for at most `timeout` seconds; True if it finished cleanly.
 
-    Same as whale_detector.py's: with the broker down, aiokafka's
-    consumer.stop() retries its last commit forever, and a send waits for
-    Telegram as long as it takes.
+    The same as streaming/jobs/whale_detector.py's (its docstring has the
+    detail): with the broker down, aiokafka's consumer.stop() can retry its
+    last commit forever or raise a CancelledError of its own making, and a
+    send waits for Telegram as long as it takes. Either way the bot logs
+    it and exits rather than hanging or ending in a traceback.
     """
+    task = asyncio.ensure_future(stop)
     try:
-        await asyncio.wait_for(stop, timeout)
-        return True
-    except asyncio.TimeoutError:
-        logger.warning("%s didn't finish within %.0fs; exiting without it", what, timeout)
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+    except asyncio.CancelledError:
+        task.cancel()  # this task really was cancelled: take `stop` down with it
+        raise
+    if not done:
+        task.cancel()
+        await asyncio.wait({task}, timeout=1)  # let it unwind, but never wait on it for good
+        logger.warning("%s didn't %s within %.0fs (broker unreachable?); exiting without it", what, verb, timeout)
         return False
+    if task.cancelled() or task.exception() is not None:
+        # Cancelled from inside: aiokafka's consumer.stop() leaks the
+        # CancelledError of fetch requests it has just cancelled when the
+        # broker is unreachable (see backend/kafka_client.py's _stop()).
+        reason = "a leaked CancelledError" if task.cancelled() else repr(task.exception())
+        logger.warning("%s failed to %s (%s; broker unreachable?); exiting without it", what, verb, reason)
+        return False
+    return True
 
 
 async def _main() -> None:
@@ -264,7 +281,7 @@ async def _main() -> None:
         failure = None if run_task.cancelled() else run_task.exception()
 
         if failure is None:
-            await stop_within(bot.flush(), "Sending the whales still held")
+            await stop_within(bot.flush(), "The whales still held", verb="send")
         await stop_within(bot.stop(), "Alert consumer")
         if failure is not None:
             raise failure
