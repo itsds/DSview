@@ -11,6 +11,12 @@
  * already shown, and delivery is best-effort anyway (an alert can arrive
  * twice), so trades are deduplicated on (exchange, trade_id).
  *
+ * A message that isn't a JSON object is logged and ignored. It used to be
+ * parsed inside the state update, where the error unmounted the whole app
+ * to a blank page — and since every connect replays the backlog, a reload
+ * brought the blank page straight back until 50 newer whales pushed the
+ * bad message out.
+ *
  * Reconnects with backoff on any close it didn't ask for (a backend
  * restart, or a 1011 because the backend couldn't reach Kafka): see
  * lib/reconnectingSocket.js, shared with useLiveCandles.js.
@@ -38,13 +44,28 @@ export function useWhaleTrades() {
   useEffect(
     () =>
       openReconnectingSocket(`${BACKEND_WS_URL}/ws/whales?backlog=${BACKLOG}`, {
-        onMessage: (data) => setTrades((previous) => addTrade(previous, JSON.parse(data))),
+        onMessage: (data) => {
+          const trade = parseTrade(data);
+          if (trade) setTrades((previous) => addTrade(previous, trade));
+        },
         onStatus: setStatus,
       }),
     [],
   );
 
   return { trades, status };
+}
+
+/** One message from /ws/whales as a trade, or null (logged) if it isn't a JSON object. */
+export function parseTrade(data) {
+  try {
+    const trade = JSON.parse(data);
+    if (trade !== null && typeof trade === "object" && !Array.isArray(trade)) return trade;
+  } catch {
+    // not JSON at all: reported below
+  }
+  console.error("Ignoring a whale alert that isn't a JSON object:", data);
+  return null;
 }
 
 function tradeKey(trade) {

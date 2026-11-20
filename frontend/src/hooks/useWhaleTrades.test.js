@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { BACKLOG, addTrade } from "./useWhaleTrades.js";
+import { BACKLOG, addTrade, parseTrade } from "./useWhaleTrades.js";
 
 const trade = (id, exchange = "binance") => ({ exchange, trade_id: String(id), symbol: "BTCUSDT" });
 
@@ -25,5 +25,20 @@ describe("addTrade", () => {
     const trades = Array.from({ length: BACKLOG + 5 }, (_, i) => trade(i)).reduce(addTrade, []);
     expect(trades).toHaveLength(BACKLOG);
     expect(trades[0].trade_id).toBe(String(BACKLOG + 4));
+  });
+});
+
+describe("parseTrade", () => {
+  it("passes an alert object through", () => {
+    expect(parseTrade('{"exchange":"binance","trade_id":"1"}')).toEqual({ exchange: "binance", trade_id: "1" });
+  });
+
+  it("ignores anything that isn't a JSON object instead of throwing", () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (const bad of ["not json", "[1, 2]", "null", "42", '"text"']) {
+      expect(parseTrade(bad)).toBeNull();
+    }
+    expect(logged).toHaveBeenCalledTimes(5);
+    logged.mockRestore();
   });
 });
