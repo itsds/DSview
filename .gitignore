@@ -14,8 +14,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchored to the repo root: unanchored, these also matched frontend/src/lib/,
+# which kept timeframes.js, keyboard.js and ids.js out of git entirely.
+/lib/
+/lib64/
 parts/
 sdist/
 var/
