@@ -23,8 +23,9 @@ Two kinds of value live here:
 What stays out: constants that tune one module and carry their own
 explanation there — the Redis key TTL (streaming/redis_sink.py), the
 dedup watermark (streaming/jobs/storage_writer.py), the REST page limits
-(backend/routers/candles.py). Moving those here would split each value
-from the comment that justifies it.
+(backend/routers/candles.py), the backfill's default depths and request
+budget (backfill/). Moving those here would split each value from the
+comment that justifies it.
 
 Importing: services are run from inside their own folders, so the repo
 root has to be on PYTHONPATH for `from config.settings import ...` to
@@ -105,6 +106,11 @@ TELEGRAM_CHAT_ID: str = _env("TELEGRAM_CHAT_ID", "")
 # The Bot API's base URL. Only the tests point it elsewhere (at a fake
 # server). DSVIEW_TELEGRAM_API_URL
 TELEGRAM_API_URL: str = _env("TELEGRAM_API_URL", "https://api.telegram.org")
+
+# Binance's spot REST API, which backfill/ pages history from (klines and
+# aggTrades; public market data, no key). The tests point it at a fake
+# server. DSVIEW_BINANCE_REST_URL
+BINANCE_REST_URL: str = _env("BINANCE_REST_URL", "https://api.binance.com")
 
 
 # --- Pipeline contract (not overridable) -------------------------------------

@@ -32,49 +32,68 @@ INDICATOR_COLUMNS = [f"ema_{period}" for period in SERVER_EMA_LENGTHS]
 
 # Rolls candles_1m up into `bucket`-sized candles, newest `limit` first.
 #
-# The inner query takes only as many 1m rows as `limit` buckets can hold
-# (limit x minutes-per-bucket), so the scan stays bounded instead of
-# aggregating a symbol's whole history. That row cap can cut the oldest
-# bucket short — but a bucket holds at most minutes-per-bucket rows, so
-# whenever the cap bites the rows span *more* than `limit` buckets, and the
-# truncated one is always the oldest, which the outer LIMIT drops. Every
-# returned bucket is complete (apart from the in-progress newest one).
+# `recent` takes only as many 1m rows as `limit` buckets can hold (limit x
+# minutes-per-bucket), so the scan stays bounded instead of aggregating a
+# symbol's whole history. That row cap can cut the oldest bucket short —
+# but a bucket holds at most minutes-per-bucket rows, so whenever the cap
+# bites the rows span *more* than `limit` buckets, and the truncated one is
+# always the oldest, which `buckets`' LIMIT drops. Every returned bucket is
+# complete (apart from the in-progress newest one).
 #
 # Buckets are aligned to the Unix epoch — floor(t / bucket) * bucket — the
 # same alignment frontend/src/lib/timeframes.js uses to roll live 1m
 # candles up, and streaming/indicator_engine.py buckets indicators by, so
 # live and historical bars for a bucket share a start time and the
 # indicator join below is a plain equality.
+#
+# Open and close come from each bucket's first and last minute, looked up
+# by primary key, rather than from an ordered aggregate: with a year of
+# backfilled history a page of 1D bars rolls up 432,000 rows, and
+# array_agg(... ORDER BY ...) sorted them all (on disk, past work_mem),
+# taking ~0.9 s. A plain hash aggregate plus 2 x `limit` index lookups
+# takes ~0.2 s.
 _HISTORY_SQL = f"""
-    SELECT candle.*, {", ".join(f"indicator.{c}" for c in INDICATOR_COLUMNS)}
-    FROM (
+    WITH recent AS (
+        SELECT window_start, high, low, volume, trade_count,
+               date_bin(%(bucket)s, window_start, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS bucket
+        FROM candles_1m
+        WHERE symbol = %(symbol)s
+          AND window_start < COALESCE(%(before)s::timestamptz, 'infinity')
+        ORDER BY window_start DESC
+        LIMIT %(row_limit)s
+    ), buckets AS (
         SELECT
-            symbol,
-            bucket AS window_start,
-            bucket + %(bucket)s AS window_end,
-            (array_agg(open ORDER BY window_start))[1] AS open,
+            bucket,
+            min(window_start) AS first_minute,
+            max(window_start) AS last_minute,
             max(high) AS high,
             min(low) AS low,
-            (array_agg(close ORDER BY window_start DESC))[1] AS close,
             sum(volume) AS volume,
             sum(trade_count) AS trade_count
-        FROM (
-            SELECT *, date_bin(%(bucket)s, window_start, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS bucket
-            FROM candles_1m
-            WHERE symbol = %(symbol)s
-              AND window_start < COALESCE(%(before)s::timestamptz, 'infinity')
-            ORDER BY window_start DESC
-            LIMIT %(row_limit)s
-        ) recent
-        GROUP BY symbol, bucket
+        FROM recent
+        GROUP BY bucket
         ORDER BY bucket DESC
         LIMIT %(limit)s
-    ) candle
+    )
+    SELECT
+        first.symbol,
+        buckets.bucket AS window_start,
+        buckets.bucket + %(bucket)s AS window_end,
+        first.open,
+        buckets.high,
+        buckets.low,
+        last.close,
+        buckets.volume,
+        buckets.trade_count,
+        {", ".join(f"indicator.{c}" for c in INDICATOR_COLUMNS)}
+    FROM buckets
+    JOIN candles_1m first ON first.symbol = %(symbol)s AND first.window_start = buckets.first_minute
+    JOIN candles_1m last ON last.symbol = %(symbol)s AND last.window_start = buckets.last_minute
     LEFT JOIN candle_indicators indicator
-        ON indicator.symbol = candle.symbol
+        ON indicator.symbol = %(symbol)s
        AND indicator.timeframe = %(timeframe)s
-       AND indicator.window_start = candle.window_start
-    ORDER BY candle.window_start DESC
+       AND indicator.window_start = buckets.bucket
+    ORDER BY buckets.bucket DESC
 """
 
 

@@ -26,6 +26,23 @@ values for all the history they can scroll to, not just from the day the
 job first ran. The checkpoint is what makes this happen only once; delete
 it to rebuild every symbol's indicators from candles_1m.
 
+**Rebuilds.** A backfill can insert candles anywhere in that history, and
+an EMA depends on every bar before it, so the saved state is then wrong
+from the inserted bar on. The backfill raises the symbol's revision in
+candle_revisions (backfill/candle_store.py); the state records the
+revision it was built from, `revision(symbol)` reads the current one on
+every batch (postgres_sink.read_candle_revision(), one indexed lookup),
+and a symbol whose revision moved is warmed up afresh, exactly as if it
+were new: its whole history's rows come out with that batch and overwrite
+the stale ones. So the job never needs a restart, or its checkpoint
+deleted, after a backfill. The rebuild happens on the symbol's next batch,
+which is within seconds while live candles flow.
+
+The state is a JSON object {"revision": n, "engine": the engine's state}.
+A checkpoint saved before revisions existed holds the engine's state bare;
+it reads as revision 0, "nothing has changed the history yet", so it
+carries on unless a backfill has run since.
+
 The function runs in Spark's Python worker processes, which import this
 module and indicator_engine.py by name: jobs run from streaming/, which
 puts it on their path (the tests add it to PYTHONPATH).
@@ -37,7 +54,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Callable, Iterable, Iterator, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, Optional, Tuple
 
 import pandas as pd
 from pyspark.sql import DataFrame
@@ -62,10 +79,29 @@ _OUTPUT_SCHEMA = StructType(
 _STATE_SCHEMA = StructType([StructField("engine", StringType())])
 
 WarmUp = Callable[[str, int], Iterable[Tuple[int, str]]]
+Revision = Callable[[str], int]
+
+
+def encode_state(revision: int, engine: IndicatorEngine) -> str:
+    """The Spark state for a symbol: its engine and the history revision that engine was built from."""
+    return json.dumps({"revision": revision, "engine": engine.to_state()})
+
+
+def decode_state(raw: str) -> Tuple[int, Dict[str, Any]]:
+    """(revision, the engine's state) from encode_state()'s JSON, or from a bare engine state saved before revisions (revision 0)."""
+    saved = json.loads(raw)
+    if "engine" in saved:
+        return saved["revision"], saved["engine"]
+    return 0, saved
 
 
 def compute_indicators(
-    candles: DataFrame, *, order_by: str, final_only: bool = False, warm_up: Optional[WarmUp] = None
+    candles: DataFrame,
+    *,
+    order_by: str,
+    final_only: bool = False,
+    warm_up: Optional[WarmUp] = None,
+    revision: Optional[Revision] = None,
 ) -> DataFrame:
     """
     Indicator rows (symbol, timeframe, window_start, ema_20, ...) from a
@@ -79,8 +115,12 @@ def compute_indicators(
     change, for an append-mode query; the input must then be final candles.
     `warm_up(symbol, before)` supplies the history a symbol's engine is
     seeded with when it has no state yet: (Unix seconds, close) of the 1m
-    candles before `before`, oldest first.
+    candles before `before`, oldest first. `revision(symbol)`, with
+    `warm_up`, is the symbol's current history revision: a state built from
+    another revision is discarded and warmed up again (see Rebuilds above).
     """
+    if revision is not None and warm_up is None:
+        raise ValueError("revision needs warm_up: a rebuild starts from the stored history")
     settle_minutes = 0 if final_only else LIVE_SETTLE_MINUTES
 
     def update_symbol(
@@ -88,11 +128,20 @@ def compute_indicators(
     ) -> Iterator[pd.DataFrame]:
         (symbol,) = key
         batch = pd.concat(list(batches), ignore_index=True).sort_values("seq", kind="stable")
+        current = revision(symbol) if revision is not None else 0
+        engine = None
         if state.exists:
-            engine = IndicatorEngine.from_state(
-                json.loads(state.get[0]), settle_minutes=settle_minutes, final_only=final_only
-            )
-        else:
+            saved_revision, engine_state = decode_state(state.get[0])
+            if saved_revision == current:
+                engine = IndicatorEngine.from_state(engine_state, settle_minutes=settle_minutes, final_only=final_only)
+            else:
+                logger.warning(
+                    "%s: candles_1m changed (revision %s -> %s); rebuilding its indicators from candles_1m",
+                    symbol,
+                    saved_revision,
+                    current,
+                )
+        if engine is None:
             engine = IndicatorEngine(settle_minutes=settle_minutes, final_only=final_only)
             if warm_up is not None:
                 for minute, close in warm_up(symbol, int(batch["minute"].min())):
@@ -103,7 +152,7 @@ def compute_indicators(
         rows = engine.drain()
         if engine.ignored:
             logger.warning("%s: %d candle updates arrived after their bar was final; ignored", symbol, engine.ignored)
-        state.update((json.dumps(engine.to_state()),))
+        state.update((encode_state(current, engine),))
 
         if rows:
             yield pd.DataFrame(

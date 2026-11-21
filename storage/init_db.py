@@ -4,7 +4,8 @@ init_db.py
 One-time, idempotent setup script: applies every storage/ddl/*.sql file
 against the Postgres instance in docker-compose.yml.
 
-Not a migration tool — two tables so far (candles_1m, candle_indicators)
+Not a migration tool — three tables so far (candles_1m, candle_indicators,
+candle_revisions)
 and no schema-change history to manage yet: every file is CREATE ... IF
 NOT EXISTS, so a column added to an existing table needs an ALTER TABLE
 by hand. Revisit with a real migration tool (e.g. Alembic) once that

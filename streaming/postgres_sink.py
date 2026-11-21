@@ -4,8 +4,9 @@ postgres_sink.py
 Postgres serving-layer writers: CandlePostgresSink for the Gold-tier
 OHLCV candles produced by candle_aggregator.py, IndicatorPostgresSink for
 the indicators jobs/indicators.py computes — plus read_minute_closes(),
-which that job warms its indicator state up from. The one place
-streaming/ touches psycopg.
+which that job warms its indicator state up from, and
+read_candle_revision(), which tells it when a backfill changed that
+history. The one place streaming/ touches psycopg.
 
 The backend-queryable counterpart to redis_sink.py: Redis serves "what's
 happening right now" (one key, TTL'd, overwritten); Postgres serves
@@ -111,3 +112,19 @@ def read_minute_closes(symbol: str, before: int, dsn: str = POSTGRES_DSN) -> Lis
             (symbol, datetime.fromtimestamp(before, timezone.utc)),
         ).fetchall()
     return [(int(window_start.timestamp()), close) for window_start, close in rows]
+
+
+def read_candle_revision(symbol: str, dsn: str = POSTGRES_DSN) -> int:
+    """
+    `symbol`'s revision in candle_revisions (storage/ddl/candle_revisions.sql),
+    which backfill/ raises whenever it changes candles_1m's history: 0 if
+    nothing has, and 0 if the table doesn't exist yet (a database set up
+    before Phase 3a, until init_db.py runs again). indicator_state.py
+    rebuilds a symbol's indicators when this moves.
+    """
+    with psycopg.connect(dsn) as conn:
+        try:
+            row = conn.execute("SELECT revision FROM candle_revisions WHERE symbol = %s", (symbol,)).fetchone()
+        except psycopg.errors.UndefinedTable:
+            return 0
+    return row[0] if row else 0

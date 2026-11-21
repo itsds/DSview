@@ -1,0 +1,4 @@
+httpx>=0.27,<1.0
+psycopg[binary]>=3.1,<4.0
+# Bronze's Parquet files. The same range streaming/requirements.txt pins for Spark.
+pyarrow>=14,<20
