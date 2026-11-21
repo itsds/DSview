@@ -60,17 +60,18 @@ then confirmed on the laptop for what only the laptop has.
 |---|---|---|---|
 | 0 | Prerequisites (owner) | S | Done |
 | 1 | Finish whale tracking; make everything trustworthy | M | Done |
-| 2 | Technical indicators in Spark | L | In progress |
-| 3 | History backfill + volume footprint | XL | Not started |
+| 2 | Technical indicators in Spark | L | Done |
+| 3a | History backfill | M | In progress |
+| 3b | Volume footprint | L | Not started |
 | 4 | Replay, backtest, long/short ratio | L | Not started |
 | 5 | More markets | L | Not started |
 | 6 | Production readiness | L | Not started |
 | 7 | Stretch and future | XL | Not started |
 
 CLAUDE.md roadmap items map to phases as: item 1 (whale tracking) → 1,
-item 2 (indicators) → 2, item 3 (footprint) → 3, item 4 (backtest, replay,
+item 2 (indicators) → 2, item 3 (footprint) → 3a and 3b, item 4 (backtest, replay,
 long/short) → 4, items 5–6 (order book, AI layer) → 7. The diagram's
-"step 4" backfill lands in Phase 3, because the footprint needs history to
+"step 4" backfill lands in Phase 3a, because the footprint needs history to
 show anything useful; its replay and backtest nodes land in Phase 4.
 
 ## Phase 0 — prerequisites (owner)
@@ -181,29 +182,56 @@ with live Binance data.
 
 ## Phase 3 — history backfill + volume footprint
 
-- [ ] Backfill job: pages Binance REST `aggTrades` into Bronze and
-      `candles_1m`; safe to rerun. Also fixes the thin chart on higher
-      timeframes.
+Split at kickoff into 3a (backfill) and 3b (footprint), each its own
+branch, pull request and laptop check: 3b builds on history 3a has
+already proved on live Binance.
+
+**Kickoff decisions** (made 2026-11-21):
+
+1. **Split: 3a backfill, 3b footprint.**
+2. **Backfill source: klines for candles, aggTrades for trades.** Binance
+   REST 1m klines fill `candles_1m` (a year back by default: about 530
+   requests, a few minutes), so EMA 200 seeds on every timeframe, 1D
+   included (it needs 200 days). aggTrades for the last 30 days by default
+   go to Bronze, for the footprint and, later, replay. Both depths are
+   flags. Paging a year of aggTrades instead (roughly a million a day for
+   BTCUSDT) would take hours and many GB.
+3. **Footprint rows: $1 stored, merged for display.** `footprint_1m`
+   keeps $1 price levels; each bar shows rows merged to a multiple ($5,
+   $10, $25…) picked to fit the zoom and timeframe, with a manual
+   override in the footprint's settings (TradingView's "ticks per row").
+4. **Footprint timeframes: 1m to 1h.** Fetched only for the bars on
+   screen, once zoomed in far enough to read cells; 4h and 1D stay plain
+   candles. The volume profile tools work on every timeframe.
+
+### Phase 3a — history backfill
+
+- [ ] Backfill job: pages Binance REST klines into `candles_1m` and
+      aggTrades into Bronze (decision 2); safe to rerun. Also fixes the
+      thin chart on higher timeframes.
 - [ ] Rebuild the indicators after a backfill: an EMA depends on every bar
       before it, so history inserted before the oldest stored candle
-      changes every value after it. Today that means deleting
-      `_checkpoints/indicators` (the next start warms up from `candles_1m`
-      again) and, for Gold, `_checkpoints/gold/indicators` with
-      `gold/indicators`; the backfill could do this itself.
-- [ ] Footprint: buy and sell volume per price level within each candle,
-      computed in Spark, stored in a new `footprint_1m` table and in Redis.
+      changes every value after it. Until now that meant deleting
+      `_checkpoints/indicators` by hand; the backfill should trigger it.
+
+**Done when:** rerunning the backfill adds no duplicate rows; the chart
+shows a year of history on every timeframe with Spark's EMA 200 on 1D;
+the live indicators rebuild themselves after a backfill, without a
+restart.
+
+### Phase 3b — volume footprint
+
+- [ ] Footprint: buy and sell volume per $1 price level within each
+      candle, computed in Spark, stored in a new `footprint_1m` table and
+      in Redis; history for the backfilled range from Bronze's aggTrades.
 - [ ] Optional (a suggestion in the diagram): an append-mode Gold copy,
       `gold/footprint_1m`.
 - [ ] Backend: `GET /footprint/{symbol}` plus live push.
-- [ ] Frontend: a footprint overlay drawn on the chart, and a volume
-      profile.
+- [ ] Frontend: a footprint overlay drawn on the chart (1m to 1h), and the
+      fixed-range and anchored volume profile tools.
 
-**Kickoff decisions:** the price-bucket size. This phase can also split
-into "backfill" and "footprint" if smaller phases are preferred.
-
-**Done when:** rerunning the backfill adds no duplicate rows; each candle's
-footprint buy + sell volume equals its candle volume; the footprint renders
-live and on history.
+**Done when:** each candle's footprint buy + sell volume equals its candle
+volume; the footprint renders live and on history.
 
 ## Phase 4 — replay, backtest, long/short ratio
 
