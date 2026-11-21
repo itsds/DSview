@@ -1,0 +1,46 @@
+# Throwaway Kafka (Redpanda), Redis and Postgres for the test suite, started
+# by scripts/test.sh as its own compose project, "dsview-test".
+#
+# Separate from the dev stack in ../docker-compose.yml on purpose: the
+# suite publishes synthetic trades and whales, and on the dev broker the
+# whale detector, the right panel and the Telegram bot would all pick them
+# up. Different ports (19092, 16379, 15432) let both stacks run at once,
+# and nothing is kept on a volume: data lives until `./scripts/test.sh down`.
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.18
+    container_name: dsview-test-redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      # One listener: only processes on the host (the tests) connect.
+      - --kafka-addr=external://0.0.0.0:19092
+      - --advertise-kafka-addr=external://localhost:19092
+    ports:
+      - "19092:19092"
+    tmpfs:
+      - /var/lib/redpanda/data
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: dsview-test-redis
+    ports:
+      - "16379:6379"
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: dsview-test-postgres
+    environment:
+      POSTGRES_USER: dsview
+      POSTGRES_PASSWORD: dsview
+      POSTGRES_DB: dsview_test
+    ports:
+      - "15432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data

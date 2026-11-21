@@ -1,0 +1,6 @@
+# Test-only dependencies; each service's own requirements.txt is installed too
+# (see CLAUDE.md's Setup).
+pytest>=8.0,<10.0
+pytest-asyncio>=0.24,<2.0
+pytest-timeout>=2.3,<3.0
+httpx>=0.27,<1.0   # FastAPI's TestClient

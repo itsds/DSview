@@ -32,6 +32,13 @@ Each alert on `alerts.whales` is one JSON object:
 Decimals are strings, like every other payload in the pipeline, so no
 consumer loses precision to a float.
 
+Shutdown is bounded: on Ctrl+C or SIGTERM the consumer and the publisher
+each get SHUTDOWN_TIMEOUT_SECONDS to close. With the broker down,
+aiokafka's consumer.stop() otherwise never returns — it commits offsets
+and leaves the group first, and retries both until the broker answers.
+Giving up only skips that last commit, so a restart re-reads at most the
+last few seconds of trades (the repeats delivery already allows for).
+
 Delivery is best-effort, not exactly-once: each alert is published and
 acknowledged before the next trade is read, but the consumer
 auto-commits its offsets. So a publish that still fails after the
@@ -71,6 +78,10 @@ logger = logging.getLogger(__name__)
 
 CONSUMER_GROUP_ID = "dsview-whale-detector"
 ALERT_EVENT_TYPE = "whale_trade"
+
+# Per client (consumer, then publisher). With the broker up each closes in
+# well under a second; this only ever runs out when it's unreachable.
+SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 WhaleAlert = Dict[str, Any]
 OnWhale = Callable[[WhaleAlert], Awaitable[None]]
@@ -184,6 +195,45 @@ class WhaleDetector:
         }
 
 
+async def stop_within(
+    stop: Awaitable[None], what: str, timeout: float = SHUTDOWN_TIMEOUT_SECONDS, verb: str = "close"
+) -> bool:
+    """
+    Await `stop` for at most `timeout` seconds; True if it finished cleanly.
+
+    For closing a Kafka client at shutdown, which waits on the broker
+    indefinitely when it's down (see the module docstring). Past the time
+    limit `stop` is cancelled, logged and given up on, so the process can
+    exit anyway; a `stop` that fails is logged and given up on too.
+
+    `stop` runs as a task of its own rather than under asyncio.wait_for():
+    with the broker down, aiokafka's consumer.stop() can raise a
+    CancelledError of its own making, which wait_for() passes on as if
+    this task had been cancelled, ending the process in a traceback. Here
+    it's just a failed close, while a real cancellation of the caller
+    still propagates. Python 3.10 has no other way to tell the two apart.
+    """
+    task = asyncio.ensure_future(stop)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+    except asyncio.CancelledError:
+        task.cancel()  # this task really was cancelled: take `stop` down with it
+        raise
+    if not done:
+        task.cancel()
+        await asyncio.wait({task}, timeout=1)  # let it unwind, but never wait on it for good
+        logger.warning("%s didn't %s within %.0fs (broker unreachable?); exiting without it", what, verb, timeout)
+        return False
+    if task.cancelled() or task.exception() is not None:
+        # Cancelled from inside: aiokafka's consumer.stop() leaks the
+        # CancelledError of fetch requests it has just cancelled when the
+        # broker is unreachable (see backend/kafka_client.py's _stop()).
+        reason = "a leaked CancelledError" if task.cancelled() else repr(task.exception())
+        logger.warning("%s failed to %s (%s; broker unreachable?); exiting without it", what, verb, reason)
+        return False
+    return True
+
+
 async def _main() -> None:
     # Publisher first, so no trade is consumed before an alert could be sent.
     publisher = AlertPublisher(topic=WHALE_ALERTS_TOPIC, client_id="dsview-whale-detector")
@@ -209,10 +259,10 @@ async def _main() -> None:
         logger.info("Stopping whale detector...")
         run_task.cancel()
         await asyncio.gather(run_task, return_exceptions=True)
-        await detector.stop()
+        await stop_within(detector.stop(), "Trade consumer")
     finally:
-        await publisher.stop()
-    logger.info("Whale detector stopped cleanly")
+        await stop_within(publisher.stop(), "Alert publisher")
+    logger.info("Whale detector stopped")
 
 
 if __name__ == "__main__":

@@ -43,42 +43,47 @@ Author: @DS
 
 from __future__ import annotations
 
+from typing import List
+
 from config.settings import DATA_ROOT
 
 from candle_windowing import build_candles
 from spark_session import get_spark_session
 from trades_source import read_trades_stream
 
-CHECKPOINT_ROOT = f"{DATA_ROOT}/_checkpoints"
 DEDUP_WATERMARK_DELAY = "10 seconds"
 
 
-def _start_parquet_stream(df, name: str, output_mode: str):
+def _start_parquet_stream(df, data_root: str, name: str, output_mode: str):
     return (
         df.writeStream.outputMode(output_mode)
         .format("parquet")
-        .option("path", f"{DATA_ROOT}/{name}")
-        .option("checkpointLocation", f"{CHECKPOINT_ROOT}/{name}")
+        .option("path", f"{data_root}/{name}")
+        .option("checkpointLocation", f"{data_root}/_checkpoints/{name}")
         .partitionBy("symbol")
         .start()
     )
 
 
-def main() -> None:
-    spark = get_spark_session("dsview-storage-writer")
-
+def start_storage_queries(spark, data_root: str = DATA_ROOT) -> List["pyspark.sql.streaming.StreamingQuery"]:  # noqa: F821
+    """Start the Bronze, Silver and Gold queries under `data_root`; returns them in that order."""
     bronze_trades = read_trades_stream(spark)
-    bronze_query = _start_parquet_stream(bronze_trades, "bronze/trades", "append")
+    bronze_query = _start_parquet_stream(bronze_trades, data_root, "bronze/trades", "append")
 
     silver_trades = bronze_trades.withWatermark("event_time", DEDUP_WATERMARK_DELAY).dropDuplicates(
         ["trade_id"]
     )
-    silver_query = _start_parquet_stream(silver_trades, "silver/trades", "append")
+    silver_query = _start_parquet_stream(silver_trades, data_root, "silver/trades", "append")
 
     gold_candles = build_candles(read_trades_stream(spark))
-    gold_query = _start_parquet_stream(gold_candles, "gold/candles_1m", "append")
+    gold_query = _start_parquet_stream(gold_candles, data_root, "gold/candles_1m", "append")
 
-    queries = [bronze_query, silver_query, gold_query]
+    return [bronze_query, silver_query, gold_query]
+
+
+def main() -> None:
+    spark = get_spark_session("dsview-storage-writer")
+    queries = start_storage_queries(spark)
     try:
         spark.streams.awaitAnyTermination()
     except KeyboardInterrupt:

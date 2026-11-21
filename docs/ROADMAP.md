@@ -18,8 +18,11 @@ Built and running end to end: live Binance trades → Redpanda → Spark
 FastAPI (live candles over WebSocket, history over REST) → a
 `lightweight-charts` chart with backfill, scroll-back, six timeframes,
 drawing tools and browser-computed indicators. Whale trades flow from the
-detector to the `alerts.whales` topic, out through `/ws/whales`, and into
-the right panel. All hardcoded config lives in `config/settings.py`.
+detector to the `alerts.whales` topic, out through `/ws/whales` into the
+right panel, and through the Telegram bot to your phone. All hardcoded
+config lives in `config/settings.py`. `./scripts/test.sh` runs a pytest
+suite over real Kafka, Redis and Postgres plus the frontend's Vitest
+tests, and GitHub Actions runs it on every push.
 
 ## How a phase runs
 
@@ -52,8 +55,8 @@ then confirmed on the laptop for what only the laptop has.
 
 | Phase | Goal | Size | Status |
 |---|---|---|---|
-| 0 | Prerequisites (owner) | S | Not started |
-| 1 | Finish whale tracking; make everything trustworthy | M | Not started |
+| 0 | Prerequisites (owner) | S | Done |
+| 1 | Finish whale tracking; make everything trustworthy | M | In progress |
 | 2 | Technical indicators in Spark | L | Not started |
 | 3 | History backfill + volume footprint | XL | Not started |
 | 4 | Replay, backtest, long/short ratio | L | Not started |
@@ -69,29 +72,47 @@ show anything useful; its replay and backtest nodes land in Phase 4.
 
 ## Phase 0 — prerequisites (owner)
 
-- [ ] Commit `frontend/src/lib/` (`timeframes.js`, `keyboard.js`, `ids.js`)
+- [x] Commit `frontend/src/lib/` (`timeframes.js`, `keyboard.js`, `ids.js`)
       from the laptop. The root `.gitignore` hid it until commit `959afc1`,
-      so the frontend can't build from the repo until it's in.
-- [ ] Merge branch `claude/vibrant-edison-ql23n3` into `main`.
+      so the frontend can't build from the repo until it's in. Landed on
+      `main` as `81b164c`.
+- [x] Merge branch `claude/vibrant-edison-ql23n3` into `main` (pull
+      request #1).
 
 ## Phase 1 — finish whale tracking; make everything trustworthy
 
-- [ ] Telegram bot, `alerts/telegram_bot.py`: reads `alerts.whales` in its
+- [x] Telegram bot, `alerts/telegram_bot.py`: reads `alerts.whales` in its
       own consumer group, ignores repeats on `(exchange, trade_id)`,
       respects Telegram's rate limits when several whales land at once,
       takes its token from an environment variable (never committed), and
       gets a `scripts/dev.sh` window.
-- [ ] Whale detector: a time limit on shutdown. With the broker down,
-      `consumer.stop()` hangs indefinitely today.
-- [ ] `useLiveCandles`: reconnect with backoff, like `useWhaleTrades`.
-      Today the chart stops updating after any backend restart until the
-      page is reloaded.
-- [ ] `tests/`: a `pytest` suite against real Kafka, Redis and Postgres
+- [x] Whale detector: a time limit on shutdown. With the broker down,
+      `consumer.stop()` hung indefinitely; each client now gets 5 s.
+- [x] `useLiveCandles`: reconnect with backoff, like `useWhaleTrades`.
+      The chart stopped updating after any backend restart until the
+      page was reloaded; both hooks now share `lib/reconnectingSocket.js`.
+- [x] `tests/`: a `pytest` suite against real Kafka, Redis and Postgres
       covering everything built so far, plus frontend tests once
-      `frontend/src/lib/` is committed, with a one-command runner.
-- [ ] Optional: GitHub Actions running the suite on every push.
+      `frontend/src/lib/` is committed, with a one-command runner
+      (`./scripts/test.sh`).
+- [x] GitHub Actions running the suite on every push (decision 3 below):
+      `.github/workflows/tests.yml`.
 
-**Kickoff decisions:** the Telegram message format; whether to add CI.
+**Kickoff decisions** (made 2026-11-20):
+
+1. **Message format.** Each whale is a three-line card:
+
+   ```
+   🐋 BUY · BTCUSDT
+   $242.5K — 2.5 @ 97,000.10
+   Binance · 10:16:57 UTC
+   ```
+
+2. **What gets sent.** Every whale the right panel shows also goes to
+   Telegram. Whales within 10 seconds of each other are combined into one
+   message rather than one notification each.
+3. **CI: yes.** GitHub Actions runs the full test suite on every push,
+   with Kafka, Redis and Postgres as service containers.
 
 **Done when:** a live whale reaches both the phone and the right panel; the
 detector exits promptly on Ctrl+C even with the broker down; the chart
@@ -158,6 +179,11 @@ ratio shows live.
 - [ ] Per-asset feature flags; gold (XAU-USD), with footprint and whale
       detection off.
 - [ ] Per-symbol whale thresholds.
+- [ ] Silver: deduplicate on `(exchange, symbol, trade_id)`, not `trade_id`
+      alone (`streaming/jobs/storage_writer.py`). Binance numbers trades
+      per symbol, so once a second symbol flows, two trades can share an
+      id and Silver would drop one. Found in Phase 1; harmless while
+      BTCUSDT is the only symbol.
 - [ ] Price formatting from each symbol's tick size (TODO in `Legend.jsx`).
 - [ ] A timeframe query parameter on `/ws/candles` (TODO in `routers/ws.py`).
 
@@ -177,6 +203,13 @@ the UI works end to end; gold runs with footprint and whale detection off.
 - [ ] Frontend backend URLs from environment variables (TODO in
       `frontend/src/config.js`).
 - [ ] Postgres connection pool (TODO in `backend/postgres_client.py`).
+- [ ] Chart: fill in the bars missed while the live socket was
+      disconnected. Since Phase 1 it reconnects and resumes with the
+      minute in progress, but minutes that closed entirely during a
+      longer outage stay missing until a reload (a backend restart's
+      second or two misses nothing). Needs a fetch since the last bar,
+      merged like a scroll-back page, plus reseeding
+      `useTimeframeCandle`'s open bucket.
 - [ ] Optional (suggestions in the diagram): a batch scheduler and a
       Gold → Postgres sync.
 

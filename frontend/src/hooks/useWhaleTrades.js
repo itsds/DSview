@@ -11,12 +11,15 @@
  * already shown, and delivery is best-effort anyway (an alert can arrive
  * twice), so trades are deduplicated on (exchange, trade_id).
  *
- * Reconnects on any close the hook didn't ask for — the backend restarting
- * (uvicorn --reload does that on every save), or a 1011 because it couldn't
- * reach Kafka — with exponential backoff. A socket that was open for a
- * while before closing starts over at the shortest delay; one that opens
- * and is closed straight away (1011 again) keeps backing off, so a broker
- * that's down isn't hammered once a second.
+ * A message that isn't a JSON object is logged and ignored. It used to be
+ * parsed inside the state update, where the error unmounted the whole app
+ * to a blank page — and since every connect replays the backlog, a reload
+ * brought the blank page straight back until 50 newer whales pushed the
+ * bad message out.
+ *
+ * Reconnects with backoff on any close it didn't ask for (a backend
+ * restart, or a 1011 because the backend couldn't reach Kafka): see
+ * lib/reconnectingSocket.js, shared with useLiveCandles.js.
  *
  * Each trade is the detector's alert JSON as-is: see
  * streaming/jobs/whale_detector.py's docstring for its fields.
@@ -27,64 +30,42 @@
 import { useEffect, useState } from "react";
 
 import { BACKEND_WS_URL } from "../config.js";
+import { openReconnectingSocket } from "../lib/reconnectingSocket.js";
 
 // Alerts replayed on each connect — and the most trades kept, since the
 // panel has no use for more than a fresh connection would show.
-const BACKLOG = 50;
-
-const RETRY_INITIAL_MS = 1_000;
-const RETRY_MAX_MS = 30_000;
-// Open at least this long before closing = a real connection, not a refusal.
-const STABLE_MS = 10_000;
+export const BACKLOG = 50;
 
 /** "connecting" until the first open, "live" while open, "reconnecting" between attempts. */
 export function useWhaleTrades() {
   const [trades, setTrades] = useState([]);
   const [status, setStatus] = useState("connecting");
 
-  useEffect(() => {
-    let ws = null;
-    let retryTimer = null;
-    let retryMs = RETRY_INITIAL_MS;
-    let openedAt = 0;
-    let stopped = false;
-
-    function connect() {
-      ws = new WebSocket(`${BACKEND_WS_URL}/ws/whales?backlog=${BACKLOG}`);
-
-      ws.onopen = () => {
-        openedAt = Date.now();
-        setStatus("live");
-      };
-
-      ws.onmessage = (event) => {
-        if (stopped) return;
-        const trade = JSON.parse(event.data);
-        setTrades((previous) => addTrade(previous, trade));
-      };
-
-      // Browsers follow every failed or dropped socket's error event with a
-      // close, so reconnecting is handled here alone.
-      ws.onclose = () => {
-        if (stopped) return;
-        if (openedAt && Date.now() - openedAt >= STABLE_MS) retryMs = RETRY_INITIAL_MS;
-        openedAt = 0;
-        setStatus("reconnecting");
-        retryTimer = setTimeout(connect, retryMs);
-        retryMs = Math.min(retryMs * 2, RETRY_MAX_MS);
-      };
-    }
-
-    connect();
-
-    return () => {
-      stopped = true;
-      clearTimeout(retryTimer);
-      ws.close();
-    };
-  }, []);
+  useEffect(
+    () =>
+      openReconnectingSocket(`${BACKEND_WS_URL}/ws/whales?backlog=${BACKLOG}`, {
+        onMessage: (data) => {
+          const trade = parseTrade(data);
+          if (trade) setTrades((previous) => addTrade(previous, trade));
+        },
+        onStatus: setStatus,
+      }),
+    [],
+  );
 
   return { trades, status };
+}
+
+/** One message from /ws/whales as a trade, or null (logged) if it isn't a JSON object. */
+export function parseTrade(data) {
+  try {
+    const trade = JSON.parse(data);
+    if (trade !== null && typeof trade === "object" && !Array.isArray(trade)) return trade;
+  } catch {
+    // not JSON at all: reported below
+  }
+  console.error("Ignoring a whale alert that isn't a JSON object:", data);
+  return null;
 }
 
 function tradeKey(trade) {
@@ -98,7 +79,7 @@ function tradeKey(trade) {
  * live — so each new one is the newest. A reconnect's replay only adds the
  * trades missed meanwhile, which are newer than everything kept.
  */
-function addTrade(trades, trade) {
+export function addTrade(trades, trade) {
   const key = tradeKey(trade);
   if (trades.some((existing) => tradeKey(existing) === key)) return trades;
   return [trade, ...trades].slice(0, BACKLOG);
