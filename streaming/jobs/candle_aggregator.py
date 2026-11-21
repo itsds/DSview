@@ -6,8 +6,10 @@ toward the lightweight-charts frontend. Reads `market.trades.raw` via
 trades_source.read_trades_stream(), tumbling-windows each symbol's trades
 via candle_windowing.build_candles() into 1-minute candles, prints each
 batch to the console, and writes the latest candle per symbol to Redis
-(live push) and Postgres (queryable serving copy for the backend's future
-REST historical endpoint) via foreachBatch.
+(live push) and Postgres (queryable serving copy the backend's REST
+history reads) via foreachBatch — and publishes every candle update to
+the market.candles.1m topic (candle_topic.py), which jobs/indicators.py
+computes the indicators from.
 
 Runs in outputMode("update"): Redis/Postgres want to see a window's
 values refine in real time as more trades arrive, not just its final
@@ -16,9 +18,10 @@ value. jobs/storage_writer.py's Gold Parquet writer uses outputMode
 Parquet sink needs exactly one row per finalized window — see that
 module's docstring for why these can't share one query.
 
-Structured Streaming has no built-in Redis or Postgres sink, so all three
-writes (console, Redis, Postgres) happen inside one foreachBatch — one
-streaming query against Kafka, not three.
+Structured Streaming has no built-in Redis or Postgres sink, so all four
+writes (console, Redis, Postgres, the candle topic) happen inside one
+foreachBatch — one streaming query against Kafka, not four. The batch is
+persisted for them, so the aggregation isn't recomputed for each.
 
 Run from streaming/ (not repo root, not from inside jobs/) so sibling
 modules resolve as bare imports, matching ingestion/'s flat import
@@ -34,6 +37,7 @@ from __future__ import annotations
 
 from datetime import timezone
 
+from candle_topic import publish_candles
 from candle_windowing import build_candles
 from postgres_sink import CandlePostgresSink
 from redis_sink import CandleRedisSink
@@ -52,19 +56,27 @@ def _row_to_candle(row) -> dict:
 def build_candle_query(
     spark, redis_sink: CandleRedisSink, postgres_sink: CandlePostgresSink
 ) -> "pyspark.sql.streaming.StreamingQuery":  # noqa: F821
-    """Wire up the read -> parse -> window-aggregate -> console+Redis+Postgres pipeline."""
+    """Wire up the read -> parse -> window-aggregate -> console+Redis+Postgres+Kafka pipeline."""
     candles = build_candles(read_trades_stream(spark))
 
     def _write_batch(batch_df, batch_id: int) -> None:
-        batch_df.show(truncate=False)
-        # A batch spanning a minute boundary holds two windows per symbol, and
-        # collect() order is arbitrary. Oldest-first keeps the Redis SET holding
-        # the newest candle and keeps pub/sub subscribers from seeing time go
-        # backwards (lightweight-charts' update() throws on an older bar).
-        for row in sorted(batch_df.collect(), key=lambda r: r["window_start"]):
-            candle = _row_to_candle(row)
-            redis_sink.write_candle(candle)
-            postgres_sink.write_candle(candle)
+        batch_df.persist()
+        try:
+            rows = batch_df.collect()
+            if not rows:
+                return  # a no-data batch (Spark runs those to move the watermark on)
+            batch_df.show(truncate=False)
+            # A batch spanning a minute boundary holds two windows per symbol, and
+            # collect() order is arbitrary. Oldest-first keeps the Redis SET holding
+            # the newest candle and keeps pub/sub subscribers from seeing time go
+            # backwards (lightweight-charts' update() throws on an older bar).
+            for row in sorted(rows, key=lambda r: r["window_start"]):
+                candle = _row_to_candle(row)
+                redis_sink.write_candle(candle)
+                postgres_sink.write_candle(candle)
+            publish_candles(batch_df)
+        finally:
+            batch_df.unpersist()
 
     return (
         candles.writeStream.outputMode("update")

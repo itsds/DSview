@@ -1,8 +1,8 @@
 """
 schemas.py
 
-Spark StructTypes describing the raw JSON wire format on DSView's Kafka
-topics.
+Spark StructTypes describing the JSON wire format on DSView's Kafka
+topics: trades (market.trades.raw) and candles (market.candles.1m).
 
 Deliberately typed as all-StringType here, mirroring the same reasoning
 whale_detector.py documents: once an event is on the wire it's just JSON,
@@ -32,5 +32,22 @@ TRADE_EVENT_SCHEMA = StructType(
         StructField("price", StringType(), nullable=False),
         StructField("quantity", StringType(), nullable=False),
         StructField("side", StringType(), nullable=False),
+    ]
+)
+
+# market.candles.1m's value, as streaming/candle_topic.py's publish_candles()
+# writes it: decimals as strings, times as ISO 8601 strings in UTC, and
+# trade_count a JSON number (a StringType field takes its text as-is).
+CANDLE_SCHEMA = StructType(
+    [
+        StructField("symbol", StringType(), nullable=False),
+        StructField("window_start", StringType(), nullable=False),
+        StructField("window_end", StringType(), nullable=False),
+        StructField("open", StringType(), nullable=False),
+        StructField("high", StringType(), nullable=False),
+        StructField("low", StringType(), nullable=False),
+        StructField("close", StringType(), nullable=False),
+        StructField("volume", StringType(), nullable=False),
+        StructField("trade_count", StringType(), nullable=False),
     ]
 )

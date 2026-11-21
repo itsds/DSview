@@ -60,7 +60,13 @@ def kafka_topics(test_services) -> None:
     from aiokafka.admin import AIOKafkaAdminClient, NewTopic
     from aiokafka.errors import TopicAlreadyExistsError
 
-    from config.settings import DEPTH_TOPIC, KAFKA_BOOTSTRAP_SERVERS, TRADES_TOPIC, WHALE_ALERTS_TOPIC
+    from config.settings import (
+        CANDLES_TOPIC,
+        DEPTH_TOPIC,
+        KAFKA_BOOTSTRAP_SERVERS,
+        TRADES_TOPIC,
+        WHALE_ALERTS_TOPIC,
+    )
 
     async def create() -> None:
         admin = AIOKafkaAdminClient(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
@@ -69,7 +75,7 @@ def kafka_topics(test_services) -> None:
             existing = set(await admin.list_topics())
             wanted = [
                 NewTopic(name=topic, num_partitions=1, replication_factor=1)
-                for topic in (TRADES_TOPIC, DEPTH_TOPIC, WHALE_ALERTS_TOPIC)
+                for topic in (TRADES_TOPIC, DEPTH_TOPIC, WHALE_ALERTS_TOPIC, CANDLES_TOPIC)
                 if topic not in existing
             ]
             if wanted:
