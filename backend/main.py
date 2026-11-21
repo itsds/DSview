@@ -5,8 +5,10 @@ Backend service entrypoint (FastAPI). Wires up the WebSocket
 live-candle push (routers/ws.py, from Redis), the REST historical-candles
 endpoint (routers/candles.py, reading Postgres's candles_1m with each
 candle's indicators from candle_indicators), the WebSocket live-indicator
-push (routers/indicators.py, from Redis) and the WebSocket whale-alert
-feed (routers/whales.py, from Kafka's alerts.whales).
+push (routers/indicators.py, from Redis), the volume footprint
+(routers/footprint.py: history and profiles from Postgres's footprint_1m,
+the live minute from Redis) and the WebSocket whale-alert feed
+(routers/whales.py, from Kafka's alerts.whales).
 
 Run from backend/ (matching ingestion/streaming's flat-import
 convention), with the repo root on PYTHONPATH (see config/settings.py):
@@ -24,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config.settings import CORS_ALLOWED_ORIGINS
 
 from routers.candles import router as candles_router
+from routers.footprint import router as footprint_router
 from routers.indicators import router as indicators_router
 from routers.whales import router as whales_router
 from routers.ws import router as ws_router
@@ -44,6 +47,7 @@ app.add_middleware(
 app.include_router(ws_router)
 app.include_router(candles_router)
 app.include_router(indicators_router)
+app.include_router(footprint_router)
 app.include_router(whales_router)
 
 

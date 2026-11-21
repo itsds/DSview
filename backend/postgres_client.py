@@ -12,18 +12,24 @@ extra tables — see _HISTORY_SQL. Indicators, which Spark computes per
 timeframe (streaming/jobs/indicators.py), are stored per timeframe in
 candle_indicators and joined onto each rolled-up candle by its start.
 
+The footprint (FootprintReader) works the same way: footprint_1m holds
+$1 levels per minute, and each request merges them into its row size and
+timeframe (_FOOTPRINT_SQL), or sums a time range into a volume profile
+(_PROFILE_SQL).
+
 Author: @DS
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
 
-from config.settings import POSTGRES_DSN, SERVER_EMA_LENGTHS, TIMEFRAMES
+from config.settings import FOOTPRINT_PRICE_STEP, POSTGRES_DSN, SERVER_EMA_LENGTHS, TIMEFRAMES
 
 ONE_MINUTE = timedelta(minutes=1)
 
@@ -134,6 +140,121 @@ class CandleHistoryReader:
         for row in rows:
             row["indicators"] = {column: row.pop(column) for column in INDICATOR_COLUMNS}
         return list(reversed(rows))  # query is DESC to LIMIT to the *latest* rows; charts want ascending
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+_EPOCH = "TIMESTAMPTZ '1970-01-01 00:00:00+00'"
+
+# A bar's footprint: footprint_1m's minutes rolled up into `bucket`-sized
+# bars (epoch-aligned, as _HISTORY_SQL's candles), and its $1 levels into
+# `row_size`-wide rows, each named by its lower bound: floor(price / row) *
+# row. Grouped on the numbers, then formatted, so rows sort by price, not
+# as text; trim_scale() drops NUMERIC(38, 18)'s trailing zeros
+# ("1.25", not "1.250000000000000000"). The primary key's range scan reads
+# only the requested minutes.
+_FOOTPRINT_SQL = f"""
+    SELECT bar, trim_scale(level)::text, trim_scale(buy)::text, trim_scale(sell)::text
+    FROM (
+        SELECT
+            date_bin(%(bucket)s, window_start, {_EPOCH}) AS bar,
+            floor(price / %(row_size)s) * %(row_size)s AS level,
+            sum(buy_volume) AS buy,
+            sum(sell_volume) AS sell
+        FROM footprint_1m
+        WHERE symbol = %(symbol)s AND window_start >= %(start)s AND window_start < %(end)s
+        GROUP BY bar, level
+    ) cells
+    ORDER BY bar, level
+"""
+
+# A volume profile: every level traded in [start, end), summed over the
+# range, in rows of `row_size` — or, without one, of whatever multiple of
+# the step splits the range's traded prices into about `rows` rows
+# (TradingView's "number of rows" layout). One scan either way: the $1
+# levels are summed first, the row size picked from their spread, and the
+# levels merged into it.
+_PROFILE_SQL = """
+    WITH levels AS (
+        SELECT price, sum(buy_volume) AS buy, sum(sell_volume) AS sell
+        FROM footprint_1m
+        WHERE symbol = %(symbol)s AND window_start >= %(start)s AND window_start < %(end)s
+        GROUP BY price
+    ), size AS (
+        SELECT COALESCE(
+            %(row_size)s::numeric,
+            greatest(%(step)s::numeric, ceil((max(price) - min(price) + %(step)s) / %(rows)s / %(step)s) * %(step)s)
+        ) AS row_size
+        FROM levels
+    )
+    SELECT trim_scale(size.row_size)::text, trim_scale(level)::text, trim_scale(buy)::text, trim_scale(sell)::text
+    FROM (
+        SELECT floor(price / size.row_size) * size.row_size AS level, sum(buy) AS buy, sum(sell) AS sell
+        FROM levels, size
+        GROUP BY level
+    ) merged, size
+    ORDER BY level
+"""
+
+# Which minutes of [start, end) have any footprint at all: the backfill
+# covers 30 days by default, so a profile over a longer range is partial.
+_COVERAGE_SQL = """
+    SELECT min(window_start), max(window_start)
+    FROM footprint_1m
+    WHERE symbol = %(symbol)s AND window_start >= %(start)s AND window_start < %(end)s
+"""
+
+
+class FootprintReader:
+    """Reads footprint_1m: bars at a timeframe and row size, and volume profiles over a time range."""
+
+    def __init__(self, dsn: str = POSTGRES_DSN) -> None:
+        self._conn = psycopg.connect(dsn, autocommit=True)
+
+    def get_bars(
+        self, symbol: str, timeframe: str, start: datetime, end: datetime, row_size: Decimal
+    ) -> list[dict[str, Any]]:
+        """
+        The footprint of every `timeframe` bar starting in [start, end)
+        (both aligned to bar starts by the caller), oldest first, as
+        {"window_start", "levels": [[price, buy_volume, sell_volume], ...]}
+        with prices ascending and numbers as plain decimal strings. A bar
+        without trades isn't listed.
+        """
+        rows = self._conn.execute(
+            _FOOTPRINT_SQL,
+            {"symbol": symbol, "bucket": TIMEFRAMES[timeframe], "start": start, "end": end, "row_size": row_size},
+        ).fetchall()
+        bars: list[dict[str, Any]] = []
+        for bar, price, buy, sell in rows:
+            if not bars or bars[-1]["window_start"] != bar:
+                bars.append({"window_start": bar, "levels": []})
+            bars[-1]["levels"].append([price, buy, sell])
+        return bars
+
+    def get_profile(
+        self, symbol: str, start: datetime, end: datetime, row_size: Decimal | None, rows: int
+    ) -> dict[str, Any]:
+        """
+        The volume profile of [start, end): {"row_size", "first_minute",
+        "last_minute", "levels": [[price, buy_volume, sell_volume], ...]},
+        prices ascending. `row_size` fixes the rows' width; None picks one
+        from the range's prices that makes about `rows` rows. first_minute
+        and last_minute are the oldest and newest minute in the range with
+        any footprint (None, and no levels, if there's none).
+        """
+        params = {
+            "symbol": symbol, "start": start, "end": end, "row_size": row_size, "rows": rows, "step": FOOTPRINT_PRICE_STEP,
+        }
+        first, last = self._conn.execute(_COVERAGE_SQL, params).fetchone()
+        levels = self._conn.execute(_PROFILE_SQL, params).fetchall() if first is not None else []
+        return {
+            "row_size": levels[0][0] if levels else (None if row_size is None else str(row_size)),
+            "first_minute": first,
+            "last_minute": last,
+            "levels": [[price, buy, sell] for _, price, buy, sell in levels],
+        }
 
     def close(self) -> None:
         self._conn.close()
