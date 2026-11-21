@@ -1,4 +1,4 @@
-"""Tests for streaming/jobs/storage_writer.py: Bronze, Silver and Gold Parquet (candles and indicators) from real Spark."""
+"""Tests for streaming/jobs/storage_writer.py: Bronze, Silver and Gold Parquet (candles, indicators, footprint) from real Spark."""
 
 from __future__ import annotations
 
@@ -54,6 +54,7 @@ async def test_bronze_keeps_everything_silver_dedups_gold_has_finalized_candles(
         gold = wait_for(lambda: _rows(spark, f"{root}/gold/candles_1m", symbol), timeout=90, message="no Gold candle")
         bronze = wait_for(lambda: len(_rows(spark, f"{root}/bronze/trades", symbol)) == 5 or None, timeout=30)
         silver = wait_for(lambda: len(_rows(spark, f"{root}/silver/trades", symbol)) == 4 or None, timeout=30)
+        footprint = wait_for(lambda: _rows(spark, f"{root}/gold/footprint_1m", symbol), timeout=60, message="no Gold footprint")
     finally:
         for query in queries:
             query.stop()
@@ -68,6 +69,17 @@ async def test_bronze_keeps_everything_silver_dedups_gold_has_finalized_candles(
     )
     assert candle["volume"] == Decimal("4")
     assert candle["trade_count"] == 3
+
+    # Gold's footprint: the finalized 10:00 minute's levels, each once, adding
+    # up to its candle's volume.
+    levels = sorted(
+        (row["window_start"].astimezone(timezone.utc), row["price"], row["buy_volume"], row["sell_volume"]) for row in footprint
+    )
+    assert levels == [
+        (BASE, Decimal("99"), Decimal("1"), Decimal("0")),
+        (BASE, Decimal("100"), Decimal("1"), Decimal("0")),
+        (BASE, Decimal("102"), Decimal("2"), Decimal("0")),
+    ]
 
 
 async def test_gold_indicators_are_the_browsers_ema_of_gold_candles_once_per_final_bar(

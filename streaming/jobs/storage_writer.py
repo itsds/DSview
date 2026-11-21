@@ -2,8 +2,8 @@
 storage_writer.py
 
 Bronze/Silver/Gold Parquet writers for the medallion storage layer (see
-CLAUDE.md's architecture table). One Spark application running four
-independent streaming queries, rather than four separate processes —
+CLAUDE.md's architecture table). One Spark application running five
+independent streaming queries, rather than five separate processes —
 each separate process would spin up its own JVM and re-resolve the Kafka
 connector JAR, which is wasteful for a laptop already running
 candle_aggregator.py, ingestion, and Redpanda alongside this.
@@ -41,6 +41,15 @@ candle_aggregator.py, ingestion, and Redpanda alongside this.
   rebuild, delete both `_checkpoints/gold/indicators` and
   `gold/indicators`, and it recomputes from all of Gold's candles.
 
+- **Gold footprint** (`gold/footprint_1m`): the same footprint
+  aggregation candle_aggregator.py's live footprint query runs
+  (footprint_windowing.build_footprint()), in append mode for the same
+  reason as Gold's candles: each finalized minute's price levels written
+  once. Any past minute's footprint, or a volume profile over any range,
+  can then be rebuilt from Gold without replaying Bronze. Like Gold's
+  candles it holds only what the live stream finalized; the backfill's
+  footprint history goes to Postgres alone.
+
 Run from streaming/ (see candle_aggregator.py's docstring for why), with
 the repo root on PYTHONPATH:
 
@@ -61,6 +70,7 @@ from pyspark.sql.types import StructType
 from config.settings import DATA_ROOT
 
 from candle_windowing import build_candles
+from footprint_windowing import build_footprint
 from indicator_state import compute_indicators
 from spark_session import get_spark_session
 from trades_source import read_trades_stream
@@ -94,7 +104,7 @@ def _partition_columns_last(schema: StructType, partition_by: Sequence[str]) -> 
 
 
 def start_storage_queries(spark, data_root: str = DATA_ROOT) -> List["pyspark.sql.streaming.StreamingQuery"]:  # noqa: F821
-    """Start the Bronze, Silver, Gold candle and Gold indicator queries under `data_root`; returns them in that order."""
+    """Start the Bronze, Silver, Gold candle, Gold indicator and Gold footprint queries under `data_root`; returns them in that order."""
     bronze_trades = read_trades_stream(spark)
     bronze_query = _start_parquet_stream(bronze_trades, data_root, "bronze/trades", "append")
 
@@ -116,7 +126,10 @@ def start_storage_queries(spark, data_root: str = DATA_ROOT) -> List["pyspark.sq
         gold_indicators, data_root, "gold/indicators", "append", partition_by=("symbol", "timeframe")
     )
 
-    return [bronze_query, silver_query, gold_query, indicators_query]
+    gold_footprint = build_footprint(read_trades_stream(spark))
+    footprint_query = _start_parquet_stream(gold_footprint, data_root, "gold/footprint_1m", "append")
+
+    return [bronze_query, silver_query, gold_query, indicators_query, footprint_query]
 
 
 def main() -> None:
