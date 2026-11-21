@@ -22,7 +22,10 @@ timeframe, live and on history (candles → `market.candles.1m` →
 `applyInPandasWithState` → Postgres, Redis and Gold); every other
 indicator is computed in the browser. Whale trades flow from the
 detector to the `alerts.whales` topic, out through `/ws/whales` into the
-right panel, and through the Telegram bot to your phone. All hardcoded
+right panel, and through the Telegram bot to your phone. A re-runnable
+backfill fills `candles_1m` a year back from Binance's REST klines and
+lands 30 days of aggTrades in Bronze, after which the live indicators
+rebuild themselves. All hardcoded
 config lives in `config/settings.py`. `./scripts/test.sh` runs a pytest
 suite over real Kafka, Redis and Postgres plus the frontend's Vitest
 tests, and GitHub Actions runs it on every push.
@@ -206,18 +209,43 @@ already proved on live Binance.
 
 ### Phase 3a — history backfill
 
-- [ ] Backfill job: pages Binance REST klines into `candles_1m` and
+- [x] Backfill job: pages Binance REST klines into `candles_1m` and
       aggTrades into Bronze (decision 2); safe to rerun. Also fixes the
-      thin chart on higher timeframes.
-- [ ] Rebuild the indicators after a backfill: an EMA depends on every bar
+      thin chart on higher timeframes: `backfill/history_backfill.py`,
+      around `binance_rest.py` (the client), `bronze_files.py` (Bronze's
+      `klines_1m` and `agg_trades`) and `candle_store.py` (Postgres).
+- [x] Rebuild the indicators after a backfill: an EMA depends on every bar
       before it, so history inserted before the oldest stored candle
       changes every value after it. Until now that meant deleting
-      `_checkpoints/indicators` by hand; the backfill should trigger it.
+      `_checkpoints/indicators` by hand; now the backfill bumps the
+      symbol's revision in a new `candle_revisions` table and the running
+      indicator job rebuilds that symbol on its next batch.
+
+Found along the way and fixed in this phase: with a year of history, a
+page of 1D bars took ~3 s from `GET /candles`, because the roll-up sorted
+432,000 minute rows on disk to pick each bucket's open and close; they now
+come from a primary-key lookup of each bucket's first and last minute
+(0.2 s, same results). Gold is deliberately untouched by the backfill:
+Gold holds what the live stream finalized, and filling it from Bronze's
+history belongs with replay (Phase 4).
 
 **Done when:** rerunning the backfill adds no duplicate rows; the chart
 shows a year of history on every timeframe with Spark's EMA 200 on 1D;
 the live indicators rebuild themselves after a backfill, without a
 restart.
+
+Met in the cloud container, against a fake Binance (`tests/fake_binance.py`)
+with the live pipeline running on synthetic trades: a year of candles
+(526,619 rows, 751 requests) in 21 s; the running indicator job noticed
+the new revision within 3 s and rebuilt in ~25 s; every EMA value of
+every timeframe over the whole year (2,035,164 values) equals math.js's;
+a rerun added one row (the minute between the first run's end and the
+live data) and no duplicates; a restart from the checkpoint didn't
+rebuild; the chart showed months of 1D and 4h bars with Spark's EMA 50
+and 200. A million aggTrades a day cost 6.6 s of CPU and 26 MB of
+Parquet. Left for the laptop: the same against live Binance, where the
+request budget, not the client, sets the pace (~40 minutes for 30 days of
+aggTrades).
 
 ### Phase 3b — volume footprint
 
