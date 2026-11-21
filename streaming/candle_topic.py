@@ -37,6 +37,10 @@ Author: @DS
 
 from __future__ import annotations
 
+import asyncio
+
+from aiokafka.admin import AIOKafkaAdminClient, NewTopic
+from aiokafka.errors import TopicAlreadyExistsError
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
@@ -96,6 +100,30 @@ def parse_candles(raw: DataFrame) -> DataFrame:
             "offset",
         )
     )
+
+
+def ensure_candles_topic() -> None:
+    """
+    Create market.candles.1m if it doesn't exist yet. Spark's Kafka source
+    fails a query outright on a missing topic (UnknownTopicOrPartition),
+    and on a fresh broker the topic only appears with candle_aggregator.py's
+    first candle, so the reader creates it rather than depend on start
+    order. One partition: a symbol's candles must stay in order, and at
+    laptop scale one is plenty.
+    """
+
+    async def create() -> None:
+        admin = AIOKafkaAdminClient(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
+        await admin.start()
+        try:
+            if CANDLES_TOPIC not in await admin.list_topics():
+                await admin.create_topics([NewTopic(name=CANDLES_TOPIC, num_partitions=1, replication_factor=1)])
+        except TopicAlreadyExistsError:
+            pass  # created meanwhile, by the first candle: fine
+        finally:
+            await admin.close()
+
+    asyncio.run(create())
 
 
 def read_candles_stream(spark: SparkSession) -> DataFrame:

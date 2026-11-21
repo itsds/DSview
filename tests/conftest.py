@@ -148,7 +148,11 @@ def spark(kafka_topics):
     from spark_session import get_spark_session
 
     # get_spark_session() also points Spark's Python workers (pandas UDFs, and
-    # the tests' createDataFrame) at this interpreter.
+    # the tests' createDataFrame) at this interpreter. Those workers import
+    # streaming's modules by bare name (indicator_state.py's docstring); a
+    # job run from streaming/ has it on their path, the suite puts it there.
+    paths = [str(REPO_ROOT / "streaming"), os.environ.get("PYTHONPATH", "")]
+    os.environ["PYTHONPATH"] = os.pathsep.join(path for path in paths if path)
     session = get_spark_session("dsview-tests")
     try:
         yield session

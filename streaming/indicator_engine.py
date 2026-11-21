@@ -53,6 +53,9 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from config.settings import SERVER_EMA_LENGTHS, TIMEFRAMES
 
 MINUTE_SECONDS = 60
+# The output columns: one per EMA length, named as in candle_indicators
+# (storage/ddl/indicators.sql) and gold/indicators.
+INDICATOR_COLUMNS = [f"ema_{period}" for period in SERVER_EMA_LENGTHS]
 TIMEFRAME_SECONDS: Dict[str, int] = {tf: int(size.total_seconds()) for tf, size in TIMEFRAMES.items()}
 
 # Minutes after which a live 1m candle can no longer change (see the module
