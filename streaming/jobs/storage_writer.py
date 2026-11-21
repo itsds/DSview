@@ -2,8 +2,8 @@
 storage_writer.py
 
 Bronze/Silver/Gold Parquet writers for the medallion storage layer (see
-CLAUDE.md's architecture table). One Spark application running three
-independent streaming queries, rather than three separate processes —
+CLAUDE.md's architecture table). One Spark application running four
+independent streaming queries, rather than four separate processes —
 each separate process would spin up its own JVM and re-resolve the Kafka
 connector JAR, which is wasteful for a laptop already running
 candle_aggregator.py, ingestion, and Redpanda alongside this.
@@ -30,6 +30,16 @@ candle_aggregator.py, ingestion, and Redpanda alongside this.
   aggregation to Redis/Postgres for live serving, where seeing a window
   refine in real time — not just its final value — is the whole point;
   that's why Gold can't just read from candle_aggregator.py's output.
+- **Gold indicators** (`gold/indicators`, partitioned by symbol and
+  timeframe): EMA 20, 50 and 200 on every timeframe, computed by the same
+  engine jobs/indicators.py runs live (indicator_state.py), but in
+  final-only mode, over Gold's own finalized candles read back as a file
+  stream: Gold derived from Gold, each bar written exactly once, when it
+  can no longer change. A bar becomes final when its timeframe's last
+  minute has been finalized, so a 1D bar lands just after midnight UTC.
+  Its state is in this query's checkpoint, like any streaming state: to
+  rebuild, delete both `_checkpoints/gold/indicators` and
+  `gold/indicators`, and it recomputes from all of Gold's candles.
 
 Run from streaming/ (see candle_aggregator.py's docstring for why), with
 the repo root on PYTHONPATH:
@@ -43,30 +53,48 @@ Author: @DS
 
 from __future__ import annotations
 
-from typing import List
+import os
+from typing import List, Sequence
+
+from pyspark.sql.types import StructType
 
 from config.settings import DATA_ROOT
 
 from candle_windowing import build_candles
+from indicator_state import compute_indicators
 from spark_session import get_spark_session
 from trades_source import read_trades_stream
 
 DEDUP_WATERMARK_DELAY = "10 seconds"
 
 
-def _start_parquet_stream(df, data_root: str, name: str, output_mode: str):
+def _start_parquet_stream(df, data_root: str, name: str, output_mode: str, partition_by: Sequence[str] = ("symbol",)):
     return (
         df.writeStream.outputMode(output_mode)
         .format("parquet")
         .option("path", f"{data_root}/{name}")
         .option("checkpointLocation", f"{data_root}/_checkpoints/{name}")
-        .partitionBy("symbol")
+        .partitionBy(*partition_by)
         .start()
     )
 
 
+def _partition_columns_last(schema: StructType, partition_by: Sequence[str]) -> StructType:
+    """
+    `schema` with the partition columns moved to the end, the order Spark
+    itself gives a partitioned file source (data columns, then partition
+    columns). Spark 3.5's streaming Parquet source reads a user-given schema
+    with a partition column anywhere else as if it weren't: it hands back
+    other columns' bytes as that column, which failed batches with
+    IllegalArgumentException or crashed the JVM (SIGSEGV in Murmur3 hashing
+    the "symbol" of a groupBy).
+    """
+    fields = [f for f in schema.fields if f.name not in partition_by]
+    return StructType(fields + [schema[name] for name in partition_by])
+
+
 def start_storage_queries(spark, data_root: str = DATA_ROOT) -> List["pyspark.sql.streaming.StreamingQuery"]:  # noqa: F821
-    """Start the Bronze, Silver and Gold queries under `data_root`; returns them in that order."""
+    """Start the Bronze, Silver, Gold candle and Gold indicator queries under `data_root`; returns them in that order."""
     bronze_trades = read_trades_stream(spark)
     bronze_query = _start_parquet_stream(bronze_trades, data_root, "bronze/trades", "append")
 
@@ -78,7 +106,17 @@ def start_storage_queries(spark, data_root: str = DATA_ROOT) -> List["pyspark.sq
     gold_candles = build_candles(read_trades_stream(spark))
     gold_query = _start_parquet_stream(gold_candles, data_root, "gold/candles_1m", "append")
 
-    return [bronze_query, silver_query, gold_query]
+    # The file source needs its directory before the first Gold candle is written.
+    os.makedirs(f"{data_root}/gold/candles_1m", exist_ok=True)
+    final_candles = spark.readStream.schema(_partition_columns_last(gold_candles.schema, ["symbol"])).parquet(
+        f"{data_root}/gold/candles_1m"
+    )
+    gold_indicators = compute_indicators(final_candles, order_by="window_start", final_only=True)
+    indicators_query = _start_parquet_stream(
+        gold_indicators, data_root, "gold/indicators", "append", partition_by=("symbol", "timeframe")
+    )
+
+    return [bronze_query, silver_query, gold_query, indicators_query]
 
 
 def main() -> None:
