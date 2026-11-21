@@ -40,7 +40,7 @@ import zlib
 from dataclasses import dataclass, field
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, urlparse
 
 MINUTE_MS = 60_000
@@ -151,6 +151,8 @@ class FakeBinance:
     now_ms: Optional[int] = None
     # (status, headers, body) answers for the next requests, used up in order.
     failures: List[Tuple[int, Dict[str, str], Any]] = field(default_factory=list)
+    # (predicate(path, params), status): every matching request fails, until cleared.
+    rules: List[Tuple[Callable[[str, Dict[str, str]], bool], int]] = field(default_factory=list)
     requests: List[Tuple[str, Dict[str, str]]] = field(default_factory=list)
     _weight: Dict[int, int] = field(default_factory=dict)  # used weight per wall-clock minute
     _server: Optional[ThreadingHTTPServer] = None
@@ -195,6 +197,11 @@ class FakeBinance:
         with self._lock:
             self.failures.extend([(status, headers, body)] * count)
 
+    def fail_matching(self, predicate: Callable[[str, Dict[str, str]], bool], status: int) -> None:
+        """Fail every request `predicate(path, params)` picks with `status`, until `rules` is cleared."""
+        with self._lock:
+            self.rules.append((predicate, status))
+
     def requests_to(self, path: str) -> List[Dict[str, str]]:
         with self._lock:
             return [params for p, params in self.requests if p == path]
@@ -208,6 +215,9 @@ class FakeBinance:
             if self.failures:
                 status, extra, body = self.failures.pop(0)
                 return status, {**headers, **extra}, body
+            for predicate, status in self.rules:
+                if predicate(path, params):
+                    return status, headers, {"code": -1000, "msg": f"fake failure {status}"}
         if path not in WEIGHTS:
             return 404, headers, {"code": -1000, "msg": "Not Found"}
         symbol = params.get("symbol", "")
