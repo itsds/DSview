@@ -19,6 +19,9 @@
  * indicators/IndicatorManager.js's: both are created with the chart and
  * kept in step with it here — the controller told the active tool and
  * magnet setting, the manager the indicator list and every data change.
+ * Spark's indicator values (indicators/server.js) arrive with every page
+ * of candles and, for the bar in progress, from useLiveIndicators.js; they
+ * go into one store per chart, which the manager reads on every refresh.
  *
  * Mounted once per symbol + timeframe (App.jsx keys it), so a switch gets
  * a fresh chart and fresh refs instead of resetting them by hand.
@@ -34,8 +37,10 @@ import { CandlestickSeries, HistogramSeries, createChart } from "lightweight-cha
 
 import { HISTORY_PAGE_SIZE, fetchCandles } from "../../api/candles.js";
 import { DrawingController } from "../../drawing/DrawingController.js";
+import { useLiveIndicators } from "../../hooks/useLiveIndicators.js";
 import { IndicatorManager } from "../../indicators/IndicatorManager.js";
 import { legendRowsAt } from "../../indicators/legend.js";
+import { createServerIndicatorStore, serverColumn } from "../../indicators/server.js";
 import { DAY_SECONDS, candleTime, timeframeSeconds } from "../../lib/timeframes.js";
 import styles from "./CandleChart.module.css";
 import { candleSeriesOptions, chartOptions, readChartTheme } from "./chartTheme.js";
@@ -91,6 +96,7 @@ export default function CandleChart({
   const volumeSeriesRef = useRef(null);
   const drawingsRef = useRef(null);
   const indicatorsRef = useRef(null);
+  const serverValuesRef = useRef(null);
   const lastBarTimeRef = useRef(null);
   const loadingOlderRef = useRef(false);
   const reachedStartRef = useRef(false);
@@ -136,10 +142,12 @@ export default function CandleChart({
       onTextRequest: (point, done) => setTextRequest({ x: point.x, y: point.y, done }),
     });
 
+    const serverValues = createServerIndicatorStore();
     const indicatorManager = new IndicatorManager({
       chart,
       candleSeries,
       volumeSeries,
+      serverValues,
       theme,
       element: containerRef.current,
       onValues: setIndicatorValues,
@@ -161,6 +169,7 @@ export default function CandleChart({
         if (disposed) return;
         if (older.length < HISTORY_PAGE_SIZE) reachedStartRef.current = true;
         if (older.length === 0) return;
+        serverValues.addHistory(older);
         candleSeries.setData([...older.map(toChartBar), ...candleSeries.data()]);
         volumeSeries.setData([...older.map((c) => toVolumeBar(c, theme)), ...volumeSeries.data()]);
         indicatorManager.refresh({ full: true });
@@ -179,6 +188,7 @@ export default function CandleChart({
     volumeSeriesRef.current = volumeSeries;
     drawingsRef.current = drawings;
     indicatorsRef.current = indicatorManager;
+    serverValuesRef.current = serverValues;
 
     return () => {
       disposed = true;
@@ -200,9 +210,18 @@ export default function CandleChart({
     indicatorsRef.current.setIndicators(indicators);
   }, [indicators]);
 
+  const showsServerIndicators = indicators.some((indicator) => serverColumn(indicator.type, indicator.params));
+  useLiveIndicators(symbol, timeframe, showsServerIndicators, (update) => {
+    serverValuesRef.current.addLive(update);
+    // A revision of an older bar changes a point mid-line, which update() can't.
+    const last = lastBarTimeRef.current;
+    indicatorsRef.current.refresh({ full: last !== null && update.time < last });
+  });
+
   useEffect(() => {
     if (history.length === 0) return;
     const bars = history.map(toChartBar);
+    serverValuesRef.current.addHistory(history);
     candleSeriesRef.current.setData(bars);
     volumeSeriesRef.current.setData(history.map((c) => toVolumeBar(c, theme)));
     lastBarTimeRef.current = bars[bars.length - 1].time;
