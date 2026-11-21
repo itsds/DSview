@@ -130,13 +130,18 @@ async def test_a_restart_resumes_after_what_was_sent(start_bot, publish, fake_te
     bot = await start_bot()
     await publish(_alert(symbol, "before"))
     await _messages(fake_telegram, 1)
+    # The fake records a message as its request arrives, before replying.
+    # Stopping while the bot still awaits that reply would rightly send it
+    # again on flush (at-least-once: it can't know it got through), so let
+    # the send finish and be committed first. Flaky in CI before this.
+    await async_wait_for(lambda: bot.bot._committed and not bot.bot._ready, timeout=10)
     await bot.stop()
 
-    await publish(_alert(symbol, "while-stopped"))
+    await publish(_alert(symbol, "while-stopped", side="sell"))  # a card that reads differently
     await start_bot()  # same consumer group
 
     messages = await _messages(fake_telegram, 2)
-    assert messages[1] == format_card(_alert(symbol, "while-stopped"))
+    assert messages[1] == format_card(_alert(symbol, "while-stopped", side="sell"))
     await asyncio.sleep(1.5)
     assert len(fake_telegram.messages) == 2  # "before" wasn't sent again
 
