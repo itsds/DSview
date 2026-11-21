@@ -367,7 +367,7 @@ const W = 4460;
 
 const LANES = [
   { id: "hot",       title: "Hot path · live candles, seconds old", color: "#1971c2", corridor: 0 },
-  { id: "medallion", title: "Medallion lakehouse · durable history", color: "#e8590c", corridor: 6 },
+  { id: "medallion", title: "Medallion lakehouse · durable history", color: "#e8590c", corridor: 8 },
   { id: "alerts",    title: "Event path · whale alerts",            color: "#c2255c", corridor: 0 },
   { id: "depth",     title: "Order book · depth (stretch goal)",    color: "#0c8599", corridor: 0 },
 ];
@@ -447,6 +447,10 @@ const NODES = [
   { id: "t_depth", parent: "f_bus", kind: "pill", color: C.bus, status: "built", flows: ["depth"],
     title: "market.depth.raw", lines: ["nothing consumes it yet"],
     what: "Order-book snapshots have been flowing since day one and no job reads them. It is the cheapest head start the stretch goal could have." },
+  { id: "t_candles", parent: "f_bus", kind: "pill", color: C.bus, status: "built", flows: ["hot"],
+    title: "market.candles.1m", lines: ["every candle update · key = symbol"],
+    code: "streaming/candle_topic.py",
+    what: "Exists because Spark 3.5 won't run applyInPandasWithState after a streaming aggregation in the same query, so the candles leave the aggregator through Kafka. Written sorted, from one task, because the indicator engine relies on a symbol's candles arriving in the order they were made." },
   { id: "x_console", parent: "f_bus", kind: "box", color: C.bus, status: "built", flows: [],
     title: "Redpanda Console :8080", lines: ["browse topics, messages, lag"],
     what: "The web UI for the broker. Reads the internal listener, which is why it is addressed as redpanda:9093." },
@@ -467,11 +471,15 @@ NODES.push(
   { id: "q_footprint", parent: "f_spark_live", kind: "box", color: C.spark, status: "planned", tag: "step 5", flows: ["hot"],
     title: "footprint query", lines: ["$1 price levels × buy/sell volume", "an extra query in this same app"],
     what: "Roughly 20 price levels per candle at $1 granularity, about 30k rows a day. It belongs in this application rather than a new one: another Spark process costs another JVM." },
+  { id: "q_indicators", col: "process", lane: "hot", kind: "box", color: C.spark, status: "built", flows: ["hot"],
+    title: "Spark app · indicators.py", lines: ["EMA 20 · 50 · 200 on all six timeframes", "applyInPandasWithState, key = symbol", "state + offsets in its checkpoint", "warm-up from candles_1m, once"],
+    code: "streaming/jobs/indicators.py · streaming/indicator_state.py · streaming/indicator_engine.py",
+    what: "An EMA bar depends on every bar before it, so each symbol's running EMAs are carried from batch to batch in Spark's arbitrary state. A bar stays provisional until a candle two minutes newer proves it can't change. Golden tests require exactly math.js's values on every bar." },
   { id: "n_modes", col: "process", lane: "hot", dx: 0, w: 340, kind: "note", color: C.note, status: "built", flows: ["hot","medallion"],
-    title: "Why two Spark apps?", lines: ["Update mode re-sends a forming candle", "every batch — right for Redis and", "Postgres, wrong for Parquet, which", "would collect one row per refinement.", "Append mode emits a window once."],
+    title: "Why two candle queries?", lines: ["Update mode re-sends a forming candle", "every batch — right for Redis and", "Postgres, wrong for Parquet, which", "would collect one row per refinement.", "Append mode emits a window once."],
     what: "The two output modes are the reason the same windowing function is started twice rather than shared through one sink." },
   { id: "n_utc", col: "process", lane: "hot", dx: 0, w: 340, kind: "note", color: C.note, status: "built", flows: ["hot"],
-    title: "The timestamp trap", lines: ["collect() returns naive local times.", "Convert to aware UTC before any sink.", "Missing it once stored every candle", "5 h 30 m in the future (IST laptop)."],
+    title: "The timestamp trap", lines: ["collect() returns naive local times.", "Convert to aware UTC before any sink.", "Missing it once stored every candle", "5 h 30 m in the future (IST laptop).", "Spark's session time zone is UTC too."],
     what: "Any future foreachBatch sink has to do the same conversion. The bug only shows up once history and live data meet on one chart." },
   { id: "f_sinks", col: "store", lane: "hot", dx: 0, w: 350, kind: "frame", color: C.spark, status: "built", flows: ["hot"],
     title: "foreachBatch · one query, three sinks", lines: ["Structured Streaming has no Redis", "or Postgres sink of its own"],
@@ -490,9 +498,13 @@ NODES.push(
   { id: "k_fp", parent: "f_sinks", kind: "box", color: C.spark, status: "planned", tag: "step 5", flows: ["hot"],
     title: "footprint writers", lines: ["→ footprint_1m + a live Redis grid"],
     what: "The same fan-out shape as candles: durable rows in Postgres, the in-progress candle's grid in Redis." },
+  { id: "k_ind", col: "store", lane: "hot", dx: 0, w: 350, kind: "box", color: C.spark, status: "built", flows: ["hot"],
+    title: "foreachBatch · indicator sinks", lines: ["IndicatorPostgresSink: executemany", "upsert, one transaction a batch", "IndicatorRedisSink: SET newest bar,", "PUBLISH each changed bar (≤ 3)"],
+    code: "streaming/postgres_sink.py · streaming/redis_sink.py",
+    what: "Every bar whose EMA changed goes to Postgres; only a series' newest few are pushed live, so a warm-up rewriting all of history doesn't flood the charts." },
 
   { id: "d_redis", col: "serve", lane: "hot", kind: "box", color: C.serve, status: "built", flows: ["hot"],
-    title: "Redis 7.4", lines: [":6379 · no volume, on purpose", "candle:{symbol}:1m — SET, TTL 120 s", "candle_updates:{symbol}:1m — pub/sub"],
+    title: "Redis 7.4", lines: [":6379 · no volume, on purpose", "candle:{symbol}:1m — SET, TTL 120 s", "candle_updates:{symbol}:1m — pub/sub", "indicators:{symbol}:{tf} + indicator_updates"],
     code: "docker-compose.yml",
     what: "A serving cache, not a source of truth. The TTL means a crashed aggregator reads as 'no live data' instead of serving a stale candle forever; losing the whole cache costs one batch." },
   { id: "x_insight", col: "serve", lane: "hot", kind: "box", color: C.serve, status: "built", flows: [],
@@ -505,7 +517,11 @@ NODES.push(
   { id: "tb_candles", parent: "d_pg", kind: "box", color: C.serve, status: "built", flows: ["hot"],
     title: "candles_1m", lines: ["PK (symbol, window_start)", "NUMERIC(38,18) · TIMESTAMPTZ", "index on (symbol, window_start desc)"],
     code: "storage/ddl/gold_candles.sql",
-    what: "The only table. Bigger timeframes are rolled up per request rather than stored, so there is nothing to keep in step." },
+    what: "Bigger timeframes are rolled up per request rather than stored, so there is nothing to keep in step. The indicator job warms up from it the first time it sees a symbol." },
+  { id: "tb_ind", parent: "d_pg", kind: "box", color: C.serve, status: "built", flows: ["hot"],
+    title: "candle_indicators", lines: ["PK (symbol, timeframe, window_start)", "ema_20 · ema_50 · ema_200 DOUBLE"],
+    code: "storage/ddl/indicators.sql",
+    what: "Stored per timeframe, unlike candles: an EMA on 5m bars can't be rolled up from the 1m one. DOUBLE PRECISION so the browser gets Spark's doubles bit for bit." },
   { id: "tb_fp", parent: "d_pg", kind: "box", color: C.serve, status: "planned", tag: "step 5", flows: ["hot"],
     title: "footprint_1m", lines: ["$1 rows; coarser levels and", "timeframes combined in SQL"],
     what: "Stored at the finest useful granularity once, then aggregated at request time — the same trick candles_1m uses for timeframes." },
@@ -519,9 +535,13 @@ NODES.push(
     code: "backend/routers/ws.py",
     what: "The cached read matters: without it a client that connects mid-minute would see nothing until the next batch." },
   { id: "r_rest", parent: "f_api", kind: "box", color: C.api, status: "built", flows: ["hot"],
-    title: "GET /candles/{symbol}", lines: ["?timeframe=1m…1D · limit ≤ 1440", "&before= pages backwards", "date_bin() rolls 1m up"],
+    title: "GET /candles/{symbol}", lines: ["?timeframe=1m…1D · limit ≤ 1440", "&before= pages backwards", "date_bin() rolls 1m up", "each candle with its indicators"],
     code: "backend/routers/candles.py",
-    what: "Buckets are epoch-aligned so a rolled-up history bar and a browser-rolled live bar always share a timestamp. The row scan is capped so a bucket is never returned half-filled." },
+    what: "Buckets are epoch-aligned so a rolled-up history bar and a browser-rolled live bar always share a timestamp. The row scan is capped so a bucket is never returned half-filled. Each candle carries its indicators, joined on the same bar start." },
+  { id: "r_ind", parent: "f_api", kind: "box", color: C.api, status: "built", flows: ["hot"],
+    title: "WS /ws/indicators/{symbol}", lines: ["?timeframe= · cached bar on connect,", "then every changed bar"],
+    code: "backend/routers/indicators.py",
+    what: "Per timeframe, unlike the candle socket: the client rolls 1m candles up itself but can't do that with an EMA." },
   { id: "r_fp", parent: "f_api", kind: "box", color: C.api, status: "planned", tag: "step 5", flows: ["hot"],
     title: "GET /footprint/{symbol} + WS", lines: ["history from Postgres,", "the live candle from Redis"],
     what: "Same split as candles, for the same reason." },
@@ -542,6 +562,10 @@ NODES.push(
     title: "useCandleHistory", lines: ["newest 300 bars for the timeframe", "empty, never stale, while loading"],
     code: "frontend/src/hooks/useCandleHistory.js",
     what: "Returns an empty list until its page arrives, so a timeframe switch can never show the previous timeframe's bars." },
+  { id: "h_ind", parent: "f_hooks", kind: "box", color: C.client, status: "built", flows: ["hot"],
+    title: "useLiveIndicators", lines: ["one socket per timeframe", "a callback, not React state"],
+    code: "frontend/src/hooks/useLiveIndicators.js",
+    what: "A callback because one Spark batch can send two messages (a revision and the bar in progress) before React renders, and state would keep only the last." },
   { id: "h_fp", parent: "f_hooks", kind: "box", color: C.client, status: "planned", tag: "step 5", flows: ["hot"],
     title: "footprint hook", lines: ["history + live grid for the panel"], what: "Mirrors the candle hooks." },
 
@@ -554,9 +578,9 @@ NODES.push(
     code: "frontend/src/components/chart/CandleChart.jsx",
     what: "update() replaces the bar at a timestamp and appends a new one, which matches exactly how the aggregator re-sends a forming candle. Bars older than the last are dropped, because update() throws on them." },
   { id: "c_ind", parent: "f_ui", kind: "box", color: C.ui, status: "built", flows: ["hot"],
-    title: "Indicators", lines: ["SMA · EMA · Bollinger · VWAP", "RSI and MACD in their own panes", "computed in the browser for now"],
+    title: "Indicators", lines: ["SMA · EMA · Bollinger · VWAP", "RSI and MACD in their own panes", "EMA 20 · 50 · 200 from Spark,", "the rest computed in the browser"],
     code: "frontend/src/indicators/",
-    what: "Roadmap item 2 moves EMA and RSI into Spark; each indicator's compute() is the single seam that then swaps for the backend's values." },
+    what: "compute() is the seam: an EMA at one of Spark's lengths takes the server's values whenever it has any, and math.js's otherwise — never a mix within one line. The legend's tooltip says which." },
   { id: "c_draw", parent: "f_ui", kind: "box", color: C.ui, status: "built", flows: ["hot"],
     title: "Drawing tools", lines: ["lines, fib, positions, anchored VWAP", "stored per symbol in localStorage", "as time/price, never pixels"],
     code: "frontend/src/drawing/",
@@ -570,7 +594,7 @@ NODES.push(
 
   /* ---------- medallion ---------- */
   { id: "f_spark_hist", col: "process", lane: "medallion", kind: "frame", color: C.spark, status: "built", flows: ["medallion"],
-    title: "Spark app · storage_writer.py", lines: ["3 streaming queries, 1 SparkSession", "one JVM, one connector resolution", "checkpoints under _checkpoints/{layer}"],
+    title: "Spark app · storage_writer.py", lines: ["4 streaming queries, 1 SparkSession", "one JVM, one connector resolution", "checkpoints under _checkpoints/{layer}"],
     code: "streaming/jobs/storage_writer.py",
     what: "Three queries in one application rather than three processes, for the same laptop-resource reason Redpanda replaced Kafka. Each query keeps its own checkpoint, so each resumes where it left off." },
   { id: "w_bronze_q", parent: "f_spark_hist", kind: "box", color: C.spark, status: "built", flows: ["medallion"],
@@ -584,8 +608,11 @@ NODES.push(
   { id: "w_fp_q", parent: "f_spark_hist", kind: "box", color: C.spark, status: "suggested", flows: ["medallion"],
     title: "footprint query · append", lines: ["one row per price level, per minute"],
     what: "The append-mode twin of the live footprint query, for the same reason Gold exists: update mode would pile up one row per refinement." },
+  { id: "w_ind_q", parent: "f_spark_hist", kind: "box", color: C.spark, status: "built", flows: ["medallion"],
+    title: "gold indicators query", lines: ["Gold candles read back as a file stream", "same EMA engine, final bars only"],
+    what: "Gold derived from Gold: each bar written exactly once, when it can no longer change. The read schema puts the partition column last; any other order makes Spark 3.5 misread it (it crashed the JVM)." },
   { id: "n_shared", col: "process", lane: "medallion", kind: "note", color: C.note, status: "built", flows: ["hot","medallion"],
-    title: "Shared, not duplicated", lines: ["trades_source.py — Kafka read + parse", "candle_windowing.py — build_candles()", "schemas.py — the wire StructType", "spark_session.py — one session config"],
+    title: "Shared, not duplicated", lines: ["trades_source.py — Kafka read + parse", "candle_windowing.py — build_candles()", "indicator_state.py — EMA, live & Gold", "schemas.py — the wire StructTypes", "spark_session.py — one session config"],
     code: "streaming/",
     what: "Both Spark apps import these, which is why the live candles and the stored ones cannot disagree. schemas.py declares the JSON shape as strings and casts after parsing, rather than importing the producer's pydantic models." },
 
@@ -608,6 +635,10 @@ NODES.push(
   { id: "l_gold_fp", col: "store", lane: "medallion", dx: 530, w: 230, kind: "box", color: C.gold, status: "suggested", flows: ["medallion"],
     title: "gold/footprint_1m", lines: ["price-level volume, kept", "so a profile can be rebuilt", "without replaying trades"],
     what: "My suggestion, not the agreed step 5, which sends the footprint only to Postgres and Redis. An append-mode copy in Gold means any past window's profile can be rebuilt later without replaying Bronze — and the volume profile in step 6 reads exactly this shape." },
+  { id: "l_gold_ind", col: "store", lane: "medallion", dx: 530, w: 230, kind: "box", color: C.gold, status: "built", flows: ["medallion"],
+    title: "gold/indicators", lines: ["EMA 20 · 50 · 200 per final bar", "by symbol and timeframe"],
+    code: "storage/data/gold/indicators/",
+    what: "The backtests' copy of the indicators, computed from Gold's own candles rather than the live stream." },
   { id: "j_backtest", col: "serve", lane: "medallion", kind: "box", color: C.serve, status: "planned", tag: "step 4", flows: ["medallion"],
     title: "Backtest", lines: ["strategies over Silver trades", "and Gold candles"],
     code: "scripts/backtest.py (planned)",
@@ -722,6 +753,26 @@ const EDGES = [
   { from: "q_candles", to: "k_pg", group: "hot", status: "built", flows: ["hot"], what: "The same rows", how: "foreachBatch, in-process", when: "every batch" },
   { from: "q_candles", to: "k_console", group: "hot", status: "built", flows: ["hot"], what: "The same rows, printed", how: "stdout", when: "every batch" },
   { from: "q_footprint", to: "k_fp", group: "hot", status: "planned", flows: ["hot"], what: "Price-level volumes", how: "foreachBatch", when: "every batch" },
+  { from: "q_candles", to: "t_candles", group: "hot", status: "built", flows: ["hot"],
+    label: "publish_candles()", what: "Every updated 1m candle as JSON, oldest window first", how: "Spark Kafka writer from foreachBatch, one task, one request in flight", when: "every batch" },
+  { from: "t_candles", to: "q_indicators", group: "hot", status: "built", flows: ["hot"],
+    label: "subscribe · checkpointed", what: "Candle JSON, applied in offset order", how: "Spark Kafka source; groupBy(symbol).applyInPandasWithState", when: "as published" },
+  { from: "tb_candles", to: "q_indicators", group: "hot", status: "built", flows: ["hot"], route: "under", below: "k_ind",
+    label: "warm-up", what: "Every stored 1m close before the first streamed candle", how: "psycopg, from Spark's Python worker", when: "once per symbol, the first time it is seen" },
+  { from: "q_indicators", to: "k_ind", group: "hot", status: "built", flows: ["hot"],
+    label: "changed bars", what: "Every bar whose EMA changed, provisional ones included, per timeframe", how: "foreachBatch, in-process", when: "every batch" },
+  { from: "k_ind", to: "d_redis", group: "hot", status: "built", flows: ["hot"],
+    label: "SET + PUBLISH", what: "Newest bar per symbol and timeframe; each changed bar", how: "Redis pipeline", when: "every batch" },
+  { from: "k_ind", to: "tb_ind", group: "hot", status: "built", flows: ["hot"],
+    label: "UPSERT", what: "One row per symbol, timeframe and bar, refined until final", how: "psycopg executemany, one transaction", when: "every batch" },
+  { from: "tb_ind", to: "r_rest", group: "hot", status: "built", flows: ["hot"],
+    label: "joined per bar", what: "Each rolled-up candle's EMA values", how: "LEFT JOIN on (symbol, timeframe, window_start)", when: "per request" },
+  { from: "d_redis", to: "r_ind", group: "hot", status: "built", flows: ["hot"],
+    label: "GET, then SUBSCRIBE", what: "The newest bar's values first, then every published bar", how: "redis asyncio client", when: "on connect, then per update" },
+  { from: "r_ind", to: "h_ind", group: "hot", status: "built", flows: ["hot"],
+    label: "indicator JSON", what: "One bar's EMA values for one timeframe", how: "WebSocket push; reconnects with backoff", when: "every Spark batch" },
+  { from: "h_ind", to: "c_ind", group: "hot", status: "built", flows: ["hot"],
+    label: "server values", what: "Bar time and values, filed in the chart's store", how: "callback, then a refresh", when: "per push" },
   { from: "k_redis", to: "d_redis", group: "hot", status: "built", flows: ["hot"],
     label: "SET + PUBLISH", what: "The latest candle as JSON, twice: cached key and channel", how: "Redis protocol", when: "every 5 s" },
   { from: "k_pg", to: "tb_candles", group: "hot", status: "built", flows: ["hot"],
@@ -762,6 +813,10 @@ const EDGES = [
     label: "append", what: "Trades, one per trade_id", how: "Parquet writer", when: "after the 10 s watermark" },
   { from: "w_gold_q", to: "l_gold", group: "medallion", status: "built", flows: ["medallion"], route: "over", track: 0,
     label: "append, once per window", what: "Finalized 1-minute candles", how: "Parquet writer", when: "per finished minute" },
+  { from: "l_gold", to: "w_ind_q", group: "medallion", status: "built", flows: ["medallion"], route: "corridor", track: 6, x1: 2512, enterRight: true,
+    label: "read back as a file stream", what: "Gold's finalized candles, partition column last", how: "Spark Parquet file source", when: "per finished minute" },
+  { from: "w_ind_q", to: "l_gold_ind", group: "medallion", status: "built", flows: ["medallion"], route: "corridor", track: 7, enterBottom: true,
+    label: "append, once per final bar", what: "EMA 20, 50 and 200 for every final bar on every timeframe", how: "Parquet writer, by symbol and timeframe", when: "as bars become final" },
   { from: "t_trades", to: "w_fp_q", group: "medallion", status: "suggested", flows: ["medallion"],
     label: "a third subscribe", what: "The same trades again, for append-mode footprint windows", how: "Spark Kafka source", when: "continuous micro-batches" },
   { from: "w_fp_q", to: "l_gold_fp", group: "medallion", status: "suggested", flows: ["medallion"], route: "corridor", track: 2, enterBottom: true,
@@ -906,6 +961,7 @@ N.x_console.y = lanesTop + busTitleH;
 N.x_registry.y = N.x_console.y + N.x_console.h + 12;
 N.t_trades.y = (LANE.hot.top + LANE.alerts.bottom) / 2 - N.t_trades.h / 2;
 N.t_depth.y = (LANE.depth.top + LANE.depth.bottom) / 2 - N.t_depth.h / 2;
+N.t_candles.y = mid(N.q_indicators) - N.t_candles.h / 2;
 
 place(N.p_producer, COL.publish.x, 0, COL.publish.w);
 place(N.p_schema, COL.publish.x, 0, COL.publish.w);
@@ -939,7 +995,7 @@ opsNodes.forEach(n => { n.h = opsH; });
 const H = opsTop + opsH + 58;
 
 const GROUP_FRAMES = [
-  { ids: ["l_bronze", "j_replay", "l_silver", "l_gold", "l_gold_fp"], label: "Medallion · Parquet under storage/data/ · Iceberg once there's a catalog" },
+  { ids: ["l_bronze", "j_replay", "l_silver", "l_gold", "l_gold_fp", "l_gold_ind"], label: "Medallion · Parquet under storage/data/ · Iceberg once there's a catalog" },
   { ids: opsNodes.map(n => n.id), label: "Platform & operations · cross-cutting" },
 ];
 
@@ -990,7 +1046,12 @@ function routePoints(e) {
       const by = e._by != null ? e._by : mid(b);
       return [{ x: a.x + a.w, y: ay }, { x: x1, y: ay }, { x: x1, y }, { x: x2, y }, { x: x2, y: by }, { x: b.x, y: by }];
     }
-    const x1 = a.x - 40 - off, bx = b.x + b.w / 2;
+    const x1 = e.x1 != null ? e.x1 : a.x - 40 - off, bx = b.x + b.w / 2;
+    if (e.enterRight) {
+      /* back up beside the target and into its right side, rather than through whatever sits below it */
+      const x2 = b.x + b.w + 26, by = b.y + b.h * 0.75;  /* below mid, clear of the target's own outgoing edge */
+      return [{ x: a.x, y: mid(a) }, { x: x1, y: mid(a) }, { x: x1, y }, { x: x2, y }, { x: x2, y: by }, { x: b.x + b.w, y: by }];
+    }
     return [{ x: a.x, y: mid(a) }, { x: x1, y: mid(a) }, { x: x1, y }, { x: bx, y }, { x: bx, y: b.y + b.h }];
   }
   if (e._type === "over") {
@@ -1017,6 +1078,12 @@ function routePoints(e) {
     if (Math.abs(ay - by) < 3) return [{ x: a.x + a.w, y: ay }, { x: b.x, y: by }];
     const cx = channelX(a, b);
     return [{ x: a.x + a.w, y: ay }, { x: cx, y: ay }, { x: cx, y: by }, { x: b.x, y: by }];
+  }
+  if (e._type === "under") {
+    /* back leftwards beneath e.below, then up into the target's right side: past a column of boxes in between */
+    const below = N[e.below], y = below.y + below.h + 18;
+    const x1 = a.x - 22, x2 = b.x + b.w + 26, by = b.y + b.h * 0.75;
+    return [{ x: a.x, y: mid(a) }, { x: x1, y: mid(a) }, { x: x1, y }, { x: x2, y }, { x: x2, y: by }, { x: b.x + b.w, y: by }];
   }
   if (e._type === "hback") {
     const cx = (b.x + b.w + a.x) / 2;

@@ -17,7 +17,10 @@ Built and running end to end: live Binance trades → Redpanda → Spark
 (1-minute candles to Redis and Postgres; Bronze/Silver/Gold Parquet) →
 FastAPI (live candles over WebSocket, history over REST) → a
 `lightweight-charts` chart with backfill, scroll-back, six timeframes,
-drawing tools and browser-computed indicators. Whale trades flow from the
+drawing tools and indicators. EMA 20, 50 and 200 come from Spark on every
+timeframe, live and on history (candles → `market.candles.1m` →
+`applyInPandasWithState` → Postgres, Redis and Gold); every other
+indicator is computed in the browser. Whale trades flow from the
 detector to the `alerts.whales` topic, out through `/ws/whales` into the
 right panel, and through the Telegram bot to your phone. All hardcoded
 config lives in `config/settings.py`. `./scripts/test.sh` runs a pytest
@@ -121,17 +124,29 @@ test suite passes.
 
 ## Phase 2 — technical indicators in Spark
 
-- [ ] `candle_aggregator.py` also publishes every 1m candle update to a new
-      topic, `market.candles.1m` (decision 3 below).
-- [ ] Spark job computing EMA 20, 50 and 200 on all six timeframes from that
+- [x] `candle_aggregator.py` also publishes every 1m candle update to a new
+      topic, `market.candles.1m` (decision 3 below): `streaming/candle_topic.py`.
+- [x] Spark job computing EMA 20, 50 and 200 on all six timeframes from that
       topic, keeping running state between candles with
       `applyInPandasWithState`; written to Redis (live) and Postgres
-      (history), with history warmed up from `candles_1m` on first start.
-- [ ] Gold: the same computation over Gold's finalized candles, into
-      `gold/indicators`.
-- [ ] Backend: REST history and live push for indicator values.
-- [ ] Frontend: switch `compute()` in `indicators/definitions.js` to the
-      backend's values for the standard set.
+      (history), with history warmed up from `candles_1m` on first start:
+      `streaming/jobs/indicators.py`, around `indicator_engine.py` (the
+      math) and `indicator_state.py` (the Spark state).
+- [x] Gold: the same computation over Gold's finalized candles, into
+      `gold/indicators` (a fourth query in `storage_writer.py`).
+- [x] Backend: REST history and live push for indicator values: each
+      candle from `GET /candles` carries its `indicators`, and
+      `/ws/indicators/{symbol}?timeframe=` pushes changed bars.
+- [x] Frontend: switch `compute()` in `indicators/definitions.js` to the
+      backend's values for the standard set (`indicators/server.js`,
+      `hooks/useLiveIndicators.js`).
+
+Found along the way and fixed in this phase: the chart's scroll-back
+could fire before the first history page landed (when the live candle got
+there first) and then throw "data must be asc ordered"; and Spark 3.5's
+streaming Parquet source misreads a schema whose partition column isn't
+last, which crashed the JVM until the Gold indicator query's read schema
+was reordered.
 
 **Kickoff decisions** (made 2026-11-21):
 
@@ -156,11 +171,25 @@ test suite passes.
 identical candles (a golden test in the suite), and the chart shows server
 values both live and on history.
 
+Met in the cloud container: golden tests require exact equality with
+math.js for the engine alone, from trades through both Spark jobs into
+Postgres, and for Gold; an end-to-end run with ten hours of history and
+live synthetic trades showed no mismatch on any bar of any timeframe,
+before and after a restart from the checkpoint, and Chromium showed
+Spark's values live and on scroll-back. Left for the laptop: the same
+with live Binance data.
+
 ## Phase 3 — history backfill + volume footprint
 
 - [ ] Backfill job: pages Binance REST `aggTrades` into Bronze and
       `candles_1m`; safe to rerun. Also fixes the thin chart on higher
       timeframes.
+- [ ] Rebuild the indicators after a backfill: an EMA depends on every bar
+      before it, so history inserted before the oldest stored candle
+      changes every value after it. Today that means deleting
+      `_checkpoints/indicators` (the next start warms up from `candles_1m`
+      again) and, for Gold, `_checkpoints/gold/indicators` with
+      `gold/indicators`; the backfill could do this itself.
 - [ ] Footprint: buy and sell volume per price level within each candle,
       computed in Spark, stored in a new `footprint_1m` table and in Redis.
 - [ ] Optional (a suggestion in the diagram): an append-mode Gold copy,
