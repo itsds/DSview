@@ -14,8 +14,11 @@ trades to work from. Two lanes per symbol, as decided at kickoff:
 - **Trades**: aggTrades from `--trade-days` back (30 by default) into
   Bronze's `agg_trades`. Roughly a million a day for BTCUSDT, so this is
   the slow lane: ~1000 requests a day, several days fetched at once
-  (`--concurrency`) under one request-weight budget. Nothing reads them
-  in Phase 3a; the footprint and replay will.
+  (`--concurrency`) under one request-weight budget. Each day then goes
+  into footprint_1m as the volume footprint's history (Phase 3b,
+  footprint_rows.py): buy and sell volume per $1 level per minute,
+  replacing whatever the live footprint wrote for those minutes, as a
+  candle does. Replay (Phase 4) will read them too.
 
 Both work a UTC day at a time, newest day first, so an interrupted run has
 already landed the days that matter most. They stop at the minute that
@@ -24,11 +27,11 @@ minute too (its watermark is 10 s), so the two never race over it.
 
 **Safe to rerun.** Every Bronze day file records the span it covers and is
 replaced whole (bronze_files.py), so a rerun skips the trade days it
-already has and refetches only today's. A candle day already in Bronze
-isn't refetched either: it is reloaded from its file into candles_1m,
-which costs nothing when the rows are already there (unchanged rows are
-not rewritten), and restores them if the table was emptied. No run adds
-a duplicate row.
+already has and refetches only today's. A day already in Bronze isn't
+refetched either: its candles are reloaded from its file into candles_1m
+and its trades' footprint into footprint_1m, which costs no writes when
+the rows are already there (unchanged rows are not rewritten), and
+restores them if a table was emptied. No run adds a duplicate row.
 
 **Indicators.** If any candle was inserted or changed, the symbol's
 revision in candle_revisions is bumped as the run ends (even an
@@ -61,6 +64,7 @@ from datetime import date, datetime, timezone
 from typing import Awaitable, Callable, Dict, List, Optional, Sequence
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from config.settings import BINANCE_REST_URL, DATA_ROOT, SYMBOLS
@@ -68,6 +72,7 @@ from config.settings import BINANCE_REST_URL, DATA_ROOT, SYMBOLS
 from binance_rest import WEIGHT_BUDGET_PER_MINUTE, BinanceError, BinanceHistoryClient, WeightBudget
 from bronze_files import AGG_TRADES, KLINES, covers, day_path, day_writer, page_table
 from candle_store import CandleStore, StoreError
+from footprint_rows import footprint_table
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +123,7 @@ class SymbolResult:
     trade_days_fetched: int = 0
     trade_days_skipped: int = 0
     trades: int = 0
+    footprint_changed: int = 0
     revision: Optional[int] = None
 
     def add_changes(self, count: int, oldest: Optional[datetime]) -> None:
@@ -136,7 +142,7 @@ class SymbolResult:
         trades = (
             f"aggTrades: {self.trade_days_fetched + self.trade_days_skipped} days "
             f"({self.trade_days_fetched} fetched, {self.trade_days_skipped} already in Bronze), "
-            f"{self.trades:,} trades fetched"
+            f"{self.trades:,} trades fetched, {self.footprint_changed:,} footprint rows inserted, changed or removed"
         )
         rebuild = (
             f"indicator rebuild requested (revision {self.revision})"
@@ -244,9 +250,32 @@ class HistoryBackfill:
             writer.write(table)
 
     async def _trade_day(self, symbol: str, span: DaySpan, result: SymbolResult) -> None:
-        if covers(day_path(self._data_root, AGG_TRADES, symbol, span.day), span.start_ms, span.end_ms):
+        path = day_path(self._data_root, AGG_TRADES, symbol, span.day)
+        if covers(path, span.start_ms, span.end_ms):
             result.trade_days_skipped += 1
-            return
+        else:
+            await self._fetch_trade_day(symbol, span, result)
+        # From the day's file either way: a fetched day and one already in Bronze load alike.
+        changed = await self._load_footprint(symbol, span, path)
+        result.footprint_changed += changed
+        if changed:
+            logger.info("%s footprint %s: %d rows inserted, changed or removed", symbol, span.day, changed)
+
+    async def _load_footprint(self, symbol: str, span: DaySpan, path) -> int:
+        def rows() -> pa.Table:
+            trades = pq.read_table(path, columns=["event_time", "price", "quantity", "side"])
+            # A file can cover more than this run's span (an earlier run went further, --until).
+            in_span = pc.and_(
+                pc.greater_equal(trades["event_time"], pa.scalar(span.start_ms * 1000, pa.timestamp("us", tz="UTC"))),
+                pc.less(trades["event_time"], pa.scalar(span.end_ms * 1000, pa.timestamp("us", tz="UTC"))),
+            )
+            return footprint_table(trades.filter(in_span))
+
+        table = await asyncio.to_thread(rows)
+        async with self._store_lock:
+            return await asyncio.to_thread(self._store.replace_footprint, symbol, span.start_ms, span.end_ms, table)
+
+    async def _fetch_trade_day(self, symbol: str, span: DaySpan, result: SymbolResult) -> None:
         started = time.monotonic()
         with day_writer(self._data_root, AGG_TRADES, symbol, span.day, span.start_ms, span.end_ms) as writer:
             pending: List[pa.Table] = []

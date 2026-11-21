@@ -58,3 +58,33 @@ async def test_spark_reads_both_bronze_datasets_and_their_candles_agree(
     )
     assert joined.count() == 1440 + 45
     assert mismatches.count() == 0
+
+
+async def test_the_backfills_footprint_matches_sparks_live_aggregation_of_the_same_trades(
+    spark, fake_binance, fake_time, pg, symbol, tmp_path
+):
+    # backfill/footprint_rows.py (pyarrow, history) and
+    # streaming/footprint_windowing.py (Spark, live) bucket the same way.
+    from footprint_windowing import build_footprint
+
+    store = CandleStore()
+    budget = WeightBudget(wall_clock=fake_time.clock, sleep=fake_time.sleep)
+    try:
+        async with BinanceHistoryClient(fake_binance.url, budget=budget, sleep=fake_time.sleep, clock=fake_time.clock) as client:
+            await HistoryBackfill(client, store, data_root=str(tmp_path)).run([symbol], 0, 1, END)
+    finally:
+        store.close()
+
+    trades = spark.read.parquet(f"{tmp_path}/bronze/agg_trades").where(F.col("symbol") == symbol)
+    built = {
+        (row["window_start"].astimezone(timezone.utc), row["price"]): (row["buy_volume"], row["sell_volume"])
+        for row in build_footprint(trades.select("symbol", "event_time", "price", "quantity", "side")).collect()
+    }
+    stored = {
+        (row["window_start"], row["price"]): (row["buy_volume"], row["sell_volume"])
+        for row in pg.execute(
+            "SELECT window_start, price, buy_volume, sell_volume FROM footprint_1m WHERE symbol = %s", (symbol,)
+        )
+    }
+    assert len(stored) > 1440
+    assert stored == built
