@@ -15,9 +15,11 @@ Author: @DS
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query
+
+from config.settings import TIMEFRAMES
 
 from postgres_client import CandleHistoryReader
 
@@ -27,16 +29,6 @@ DEFAULT_LIMIT = 200
 # One day of 1m candles — what frontend/src/hooks/useTimeframeCandle.js
 # fetches to seed a live 1D candle that's already in progress.
 MAX_LIMIT = 1440
-
-# Must match frontend/src/lib/timeframes.js's TIMEFRAMES.
-TIMEFRAMES = {
-    "1m": timedelta(minutes=1),
-    "5m": timedelta(minutes=5),
-    "15m": timedelta(minutes=15),
-    "1h": timedelta(hours=1),
-    "4h": timedelta(hours=4),
-    "1D": timedelta(days=1),
-}
 
 
 @router.get("/candles/{symbol}")

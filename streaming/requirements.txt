@@ -2,3 +2,10 @@ pyspark>=3.5,<3.6
 aiokafka>=0.10
 redis>=5.0,<6.0
 psycopg[binary]>=3.1,<4.0
+# For jobs/indicators.py's applyInPandasWithState (a pandas UDF, so pandas on
+# the Python side and Arrow between it and the JVM). Spark 3.5 breaks on
+# newer releases: pyarrow 26 fails every batch with "'float' object cannot
+# be interpreted as an integer" (17 and 19 tested fine), and pandas 3 is
+# newer than anything Spark 3.5 was built against (2.2 tested fine).
+pandas>=2.0,<3.0
+pyarrow>=14,<20

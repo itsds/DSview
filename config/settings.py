@@ -14,16 +14,17 @@ Two kinds of value live here:
   `redis:6379` rather than `localhost:6379`, or pointing it at the cloud
   needs an environment variable, not a code edit. The defaults match
   docker-compose.yml, so local dev needs no variables at all.
-- **Pipeline contract**: the Kafka topic names. The producer and every
-  consumer must agree on them, so they are deliberately not overridable
-  from the environment — renaming a topic is a code change, made here
-  once.
+- **Pipeline contract**: the Kafka topic names, the chart timeframes and
+  the EMA lengths Spark precomputes. A producer and its consumers must
+  agree on them, so they are deliberately not overridable from the
+  environment — renaming a topic or adding a timeframe is a code change,
+  made here once.
 
 What stays out: constants that tune one module and carry their own
 explanation there — the Redis key TTL (streaming/redis_sink.py), the
 dedup watermark (streaming/jobs/storage_writer.py), the REST page limits
-and the timeframe table (backend/routers/candles.py). Moving those here
-would split each value from the comment that justifies it.
+(backend/routers/candles.py). Moving those here would split each value
+from the comment that justifies it.
 
 Importing: services are run from inside their own folders, so the repo
 root has to be on PYTHONPATH for `from config.settings import ...` to
@@ -40,9 +41,10 @@ Author: @DS
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -116,3 +118,28 @@ DEPTH_TOPIC = "market.depth.raw"
 # docstring for the message shape); backend/routers/whales.py serves it
 # over /ws/whales, and alerts/telegram_bot.py sends it to Telegram.
 WHALE_ALERTS_TOPIC = "alerts.whales"
+
+# streaming/jobs/candle_aggregator.py publishes every 1-minute candle update
+# here, keyed by symbol; streaming/jobs/indicators.py computes indicators
+# from it. streaming/candle_topic.py owns the message shape.
+CANDLES_TOPIC = "market.candles.1m"
+
+# The chart's timeframes, by the ids the REST API, Redis keys and Postgres
+# rows use. Every one is rolled up from 1-minute candles in buckets aligned
+# to the Unix epoch, by backend/postgres_client.py (history) and
+# streaming/indicator_engine.py (indicators) alike. Must match
+# frontend/src/lib/timeframes.js's TIMEFRAMES.
+TIMEFRAMES: Dict[str, timedelta] = {
+    "1m": timedelta(minutes=1),
+    "5m": timedelta(minutes=5),
+    "15m": timedelta(minutes=15),
+    "1h": timedelta(hours=1),
+    "4h": timedelta(hours=4),
+    "1D": timedelta(days=1),
+}
+
+# The EMA lengths streaming/jobs/indicators.py precomputes on every timeframe
+# (Phase 2's kickoff decision; docs/ROADMAP.md). An EMA at any other length
+# is computed in the browser. Each is a column of storage/ddl/indicators.sql
+# (ema_20, ...) and must match frontend/src/indicators/server.js.
+SERVER_EMA_LENGTHS: Tuple[int, ...] = (20, 50, 200)

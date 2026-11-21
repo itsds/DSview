@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -142,12 +141,8 @@ def spark(kafka_topics):
     """One local SparkSession for every Spark test, built by streaming/spark_session.py."""
     from spark_session import get_spark_session
 
-    # Spark starts Python workers for local data (createDataFrame) with
-    # whatever `python3` is on PATH unless told otherwise, and refuses to run
-    # one whose version differs from the driver's. The jobs themselves never
-    # need workers; the tests' static DataFrames do.
-    os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
-
+    # get_spark_session() also points Spark's Python workers (pandas UDFs, and
+    # the tests' createDataFrame) at this interpreter.
     session = get_spark_session("dsview-tests")
     try:
         yield session
