@@ -9,6 +9,9 @@ ever holds the current candle and has no history to serve.
 Bigger timeframes are rolled up from candles_1m at query time (see
 postgres_client.py). `before` pages backwards for the chart's infinite
 scroll-back: pass the window_start of the oldest candle already loaded.
+Each candle comes with the indicators Spark computed for that bar
+(`indicators`: {"ema_20": ..., "ema_50": ..., "ema_200": ...}, null where
+there's no value), so every page of history carries its own.
 
 Author: @DS
 """
@@ -42,14 +45,13 @@ def get_candle_history(
 
     With `before`, only candles whose window starts before it.
     """
-    bucket = TIMEFRAMES.get(timeframe)
-    if bucket is None:
+    if timeframe not in TIMEFRAMES:
         raise HTTPException(status_code=422, detail=f"timeframe must be one of {list(TIMEFRAMES)}")
     if before is not None and before.tzinfo is None:
         before = before.replace(tzinfo=timezone.utc)  # a naive timestamp means UTC, like everything else here
 
     reader = CandleHistoryReader()
     try:
-        return reader.get_candles(symbol, limit=limit, bucket=bucket, before=before)
+        return reader.get_candles(symbol, limit=limit, timeframe=timeframe, before=before)
     finally:
         reader.close()
