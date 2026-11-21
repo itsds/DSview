@@ -59,7 +59,7 @@ def _summary(rows) -> str:
     lines = [f"{len(rows)} indicator rows"]
     for (symbol, timeframe), row in sorted(newest.items()):
         values = "  ".join(
-            f"{column.upper().replace('_', ' ')} {row[column]:,.2f}" if row[column] is not None else f"{column} —"
+            f"{column.upper().replace('_', ' ')} {'—' if row[column] is None else f'{row[column]:,.2f}'}"
             for column in INDICATOR_COLUMNS
         )
         lines.append(f"  {symbol} {timeframe:>3} {row['window_start']:%Y-%m-%d %H:%M}  {values}")

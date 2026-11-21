@@ -46,6 +46,7 @@ SERVICES=(
   "whales|streaming|python -m jobs.whale_detector"
   "telegram|alerts|python telegram_bot.py"
   "candles|streaming|python -m jobs.candle_aggregator"
+  "indicators|streaming|python -m jobs.indicators"
   "storage|streaming|python -m jobs.storage_writer"
   "backend|backend|uvicorn main:app --reload --port 8000"
   "frontend|frontend|npm run dev"
