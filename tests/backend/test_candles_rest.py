@@ -1,4 +1,4 @@
-"""Tests for GET /candles/{symbol} (backend/routers/candles.py + postgres_client.py) over real Postgres."""
+"""Tests for GET /candles/{symbol} (backend/routers/candles.py + postgres_client.py) over real Postgres, indicators included."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ def ten_minutes(pg, symbol):
         )
     yield
     pg.execute("DELETE FROM candles_1m WHERE symbol = %s", (symbol,))
+    pg.execute("DELETE FROM candle_indicators WHERE symbol = %s", (symbol,))
 
 
 def _starts(candles):
@@ -65,6 +66,32 @@ def test_before_pages_backwards_and_a_naive_timestamp_means_utc(client, ten_minu
 
     older = client.get(f"/candles/{symbol}", params={"timeframe": "5m", "before": (BASE + timedelta(minutes=5)).isoformat()})
     assert _starts(older.json()) == [BASE]
+
+
+def _store_indicators(pg, symbol, timeframe, start, ema_20, ema_50=None, ema_200=None):
+    pg.execute(
+        """
+        INSERT INTO candle_indicators (symbol, timeframe, window_start, ema_20, ema_50, ema_200)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (symbol, timeframe, start, ema_20, ema_50, ema_200),
+    )
+
+
+def test_each_candle_carries_its_own_timeframes_indicators(client, ten_minutes, pg, symbol):
+    _store_indicators(pg, symbol, "1m", BASE + timedelta(minutes=9), 109.123456789012, 105.5)
+    _store_indicators(pg, symbol, "5m", BASE + timedelta(minutes=5), 104.25)
+    _store_indicators(pg, symbol, "5m", BASE + timedelta(minutes=9), 999.0)  # not a 5m bar start: never matched
+
+    minute = client.get(f"/candles/{symbol}", params={"limit": 2}).json()
+    assert [c["indicators"] for c in minute] == [
+        {"ema_20": None, "ema_50": None, "ema_200": None},  # 10:08: nothing computed
+        {"ema_20": 109.123456789012, "ema_50": 105.5, "ema_200": None},  # the double, exactly
+    ]
+
+    five = client.get(f"/candles/{symbol}", params={"timeframe": "5m"}).json()
+    assert [c["indicators"]["ema_20"] for c in five] == [None, 104.25]
+    assert _ohlc(five[1]) == (105, 114, 100, 110)  # the join leaves the candles as they were
 
 
 def test_unknown_timeframe_and_out_of_range_limit_are_rejected(client, symbol):

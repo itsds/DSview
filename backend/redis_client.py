@@ -2,10 +2,10 @@
 redis_client.py
 
 Async Redis boundary for the backend service — the read-side counterpart
-to streaming/redis_sink.py's write-side CandleRedisSink. Kept as its own
-module so routers/ws.py never touches `redis` directly, mirroring the
-same producer/consumer-boundary pattern used elsewhere in this repo (see
-ingestion/producer.py).
+to streaming/redis_sink.py's CandleRedisSink and IndicatorRedisSink. Kept
+as its own module so routers/ws.py and routers/indicators.py never touch
+`redis` directly, mirroring the same producer/consumer-boundary pattern
+used elsewhere in this repo (see ingestion/producer.py).
 
 Author: @DS
 """
@@ -20,7 +20,7 @@ from config.settings import REDIS_HOST, REDIS_PORT
 
 
 class CandleRedisReader:
-    """Reads the current cached candle and live pub/sub updates from Redis."""
+    """Reads the current cached candle or indicators, and their live pub/sub updates, from Redis."""
 
     def __init__(self, host: str = REDIS_HOST, port: int = REDIS_PORT) -> None:
         self._client = redis.Redis(host=host, port=port, decode_responses=True)
@@ -35,10 +35,20 @@ class CandleRedisReader:
         """
         return await self._client.get(f"candle:{symbol}:{timeframe}")
 
-    async def subscribe_updates(self, symbol: str, timeframe: str) -> AsyncIterator[str]:
+    def subscribe_updates(self, symbol: str, timeframe: str) -> AsyncIterator[str]:
         """Yield each candle update JSON as CandleRedisSink publishes it."""
+        return self._subscribe(f"candle_updates:{symbol}:{timeframe}")
+
+    async def get_latest_indicators(self, symbol: str, timeframe: str) -> Optional[str]:
+        """The newest bar's cached indicators JSON for `symbol` at `timeframe`, if any (IndicatorRedisSink)."""
+        return await self._client.get(f"indicators:{symbol}:{timeframe}")
+
+    def subscribe_indicator_updates(self, symbol: str, timeframe: str) -> AsyncIterator[str]:
+        """Yield each indicators JSON as IndicatorRedisSink publishes it."""
+        return self._subscribe(f"indicator_updates:{symbol}:{timeframe}")
+
+    async def _subscribe(self, channel: str) -> AsyncIterator[str]:
         pubsub = self._client.pubsub()
-        channel = f"candle_updates:{symbol}:{timeframe}"
         await pubsub.subscribe(channel)
         try:
             async for message in pubsub.listen():

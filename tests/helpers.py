@@ -16,17 +16,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
+import shutil
+import subprocess
 import time
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from aiokafka import AIOKafkaConsumer
 
 from config.settings import KAFKA_BOOTSTRAP_SERVERS
 
 from schema import Exchange, Side, TradeEvent
+
+EMA_REFERENCE_SCRIPT = Path(__file__).resolve().parent / "js" / "ema_reference.mjs"
 
 
 def make_trade(
@@ -147,3 +153,44 @@ async def async_wait_for(condition: Callable[[], Any], timeout: float = 30.0, in
         if time.monotonic() > deadline:
             raise TimeoutError(message or f"condition not met within {timeout}s")
         await asyncio.sleep(interval)
+
+
+def golden_minutes(count: int, start: datetime, seed: int = 7) -> List[Tuple[int, str]]:
+    """
+    `count` consecutive final 1m candles from `start`: (Unix seconds, close),
+    a seeded random walk around 97,000 with cent prices, the same every run.
+    """
+    rng = random.Random(seed)
+    first = int(start.timestamp())
+    price = Decimal("97000.00")
+    minutes = []
+    for i in range(count):
+        price += Decimal(rng.randint(-2500, 2500)) / 100
+        minutes.append((first + 60 * i, str(price)))
+    return minutes
+
+
+def math_js_ema(
+    minutes: Sequence[Tuple[int, str]], timeframes: Mapping[str, int], lengths: Sequence[int]
+) -> Dict[str, Dict[int, Dict[int, Optional[float]]]]:
+    """
+    The browser's EMA over `minutes` (final 1m candles, oldest first), from
+    frontend/src/indicators/math.js itself, via tests/js/ema_reference.mjs:
+    {timeframe: {length: {bar start: value or None}}}.
+    """
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+
+        pytest.skip("node not on PATH: the golden tests run frontend/src/indicators/math.js itself")
+    request = {"minutes": [list(m) for m in minutes], "timeframes": dict(timeframes), "lengths": list(lengths)}
+    result = subprocess.run(
+        [node, str(EMA_REFERENCE_SCRIPT)], input=json.dumps(request), capture_output=True, text=True, check=True
+    )
+    out = json.loads(result.stdout)
+    return {
+        timeframe: {
+            int(period): dict(zip(series["starts"], values)) for period, values in series["ema"].items()
+        }
+        for timeframe, series in out.items()
+    }

@@ -5,10 +5,13 @@
  * (over the candles, or in its own pane below them), the lines it's made
  * of, and how to compute them from the chart's bars.
  *
- * compute() is the single place values come from. It runs in the browser
- * for now; when roadmap item 2 moves EMA/RSI into Spark, their compute() is
- * what gets replaced by the backend's values — nothing that draws or lists
- * indicators has to change.
+ * compute() is the single place values come from, and the seam between
+ * the browser's formulas and Spark's: an EMA at one of server.js's
+ * SERVER_EMA_LENGTHS takes the backend's values (computed by
+ * streaming/jobs/indicators.py, on every timeframe) whenever the server has
+ * any for the loaded bars, and math.js's otherwise. Nothing that draws or
+ * lists indicators knows which it got. Its input is { bars, closes,
+ * volumes, server } — see IndicatorManager.js and server.js's serverInput().
  *
  * Colour: each instance keeps the colour slot it was given when added (see
  * useIndicators.js). Slots are theme.css's three validated series hues, then
@@ -19,6 +22,7 @@
  */
 
 import { bollinger, ema, macd, rsi, sma, vwap } from "./math.js";
+import { serverColumn } from "./server.js";
 
 export const SERIES_HUES = 3; // theme.css --color-series-1..3
 export const MAX_PRICE_OVERLAYS = SERIES_HUES * 2;
@@ -51,7 +55,10 @@ export const INDICATORS = {
     pane: "price",
     params: [lengthParam(20)],
     lines: [{ key: "value", label: "EMA", type: "line" }],
-    compute: ({ closes }, { period }) => ({ value: ema(closes, period) }),
+    // Spark's values for its standard lengths, else (or until it has any) the browser's.
+    compute: ({ closes, server }, { period }) => ({
+      value: server?.series(serverColumn("ema", { period })) ?? ema(closes, period),
+    }),
   },
   bb: {
     name: "Bollinger Bands",

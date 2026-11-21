@@ -4,8 +4,9 @@
  * Timeframe definitions and the bucket math shared by history and live
  * candles. Buckets are aligned to the Unix epoch — floor(t / size) * size
  * — which is exactly how backend/postgres_client.py's date_bin() query
- * rolls candles_1m up, so a live bar and a history bar for the same
- * bucket always get the same start time.
+ * rolls candles_1m up (and how streaming/indicator_engine.py buckets
+ * indicators), so a live bar and a history bar for the same bucket
+ * always get the same start time.
  *
  * Author: @DS
  */
@@ -13,7 +14,7 @@
 export const MINUTE_SECONDS = 60;
 export const DAY_SECONDS = 24 * 60 * 60;
 
-// Must match backend/routers/candles.py's TIMEFRAMES.
+// Must match config/settings.py's TIMEFRAMES.
 export const TIMEFRAMES = [
   { id: "1m", seconds: MINUTE_SECONDS },
   { id: "5m", seconds: 5 * MINUTE_SECONDS },

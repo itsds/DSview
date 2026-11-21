@@ -12,7 +12,12 @@
  * cheap (O(bars) per indicator), so refresh() always recomputes everything
  * and only decides how to push it: setData() after history loads or a page
  * is prepended, update() of the last point on a live tick — the same split
- * CandleChart.jsx uses for the candles.
+ * CandleChart.jsx uses for the candles. An indicator whose values just
+ * switched between the browser's and the server's (server.js) is always
+ * pushed in full: every point changed, not just the last.
+ *
+ * Server values come from `serverValues`, CandleChart.jsx's
+ * server.js store, read afresh on every refresh.
  *
  * Any change to the indicator list rebuilds every indicator series and pane
  * from scratch rather than diffing: there are only a handful, and it keeps
@@ -24,6 +29,7 @@
 import { HistogramSeries, LineSeries, LineStyle } from "lightweight-charts";
 
 import { INDICATORS, indicatorLabel, slotStyle } from "./definitions.js";
+import { createServerIndicatorStore, serverInput } from "./server.js";
 
 // An oscillator pane's height relative to the price pane's (stretch factor 1).
 const OSCILLATOR_PANE_STRETCH = 0.3;
@@ -33,8 +39,9 @@ export class IndicatorManager {
    * `element` is the chart's container; pane positions are reported
    * relative to its top edge.
    */
-  constructor({ chart, candleSeries, volumeSeries, theme, element, onValues, onLayout }) {
+  constructor({ chart, candleSeries, volumeSeries, serverValues, theme, element, onValues, onLayout }) {
     this._chart = chart;
+    this._serverValues = serverValues ?? createServerIndicatorStore();
     this._candleSeries = candleSeries;
     this._volumeSeries = volumeSeries;
     this._theme = theme;
@@ -42,7 +49,7 @@ export class IndicatorManager {
     this._onValues = onValues;
     this._onLayout = onLayout;
     this._indicators = [];
-    this._built = []; // { indicator, def, paneIndex, series: { [lineKey]: series } }
+    this._built = []; // { indicator, def, paneIndex, series: { [lineKey]: series }, fromServer }
     this._frame = null;
 
     this._resizeObserver = new ResizeObserver(this._measurePanes);
@@ -68,11 +75,15 @@ export class IndicatorManager {
     };
 
     const computed = this._built.map((built) => {
-      const values = bars.length === 0 ? {} : built.def.compute(input, built.indicator.params);
+      const server = serverInput(this._serverValues, bars);
+      const values = bars.length === 0 ? {} : built.def.compute({ ...input, server }, built.indicator.params);
+      const fromServer = server.used.size > 0;
+      const switched = built.fromServer !== null && built.fromServer !== fromServer;
+      built.fromServer = fromServer;
       for (const line of built.def.lines) {
         const series = built.series[line.key];
         const lineValues = values[line.key] ?? [];
-        if (full) {
+        if (full || switched) {
           series.setData(this._toPoints(times, lineValues, line));
         } else {
           const last = lineValues.length - 1;
@@ -91,6 +102,7 @@ export class IndicatorManager {
         paneIndex: built.paneIndex,
         visible: built.indicator.visible,
         hasSettings: built.def.params.length > 0,
+        fromServer: built.fromServer,
         lines: built.def.lines.map((line) => ({
           key: line.key,
           label: line.label,
@@ -151,7 +163,7 @@ export class IndicatorManager {
         });
       }
 
-      this._built.push({ indicator, def, paneIndex, series });
+      this._built.push({ indicator, def, paneIndex, series, fromServer: null });
     }
   }
 

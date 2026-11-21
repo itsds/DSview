@@ -22,11 +22,17 @@ function minute(offset, { open, high, low, close, volume, trades = 1 }) {
 }
 
 describe("timeframes", () => {
-  it("lists the same timeframes as backend/routers/candles.py", () => {
-    const backend = readFileSync(new URL("../../../backend/routers/candles.py", import.meta.url), "utf8");
-    const block = backend.slice(backend.indexOf("TIMEFRAMES = {"), backend.indexOf("}", backend.indexOf("TIMEFRAMES = {")));
-    const backendIds = [...block.matchAll(/"([^"]+)":/g)].map((match) => match[1]);
-    expect(TIMEFRAMES.map((tf) => tf.id)).toEqual(backendIds);
+  it("lists the same timeframes, of the same lengths, as config/settings.py", () => {
+    const settings = readFileSync(new URL("../../../config/settings.py", import.meta.url), "utf8");
+    const start = settings.search(/^TIMEFRAMES\b/m);
+    const block = settings.slice(start, settings.indexOf("}", start));
+    const unitSeconds = { minutes: 60, hours: 3600, days: 86400 };
+    const python = [...block.matchAll(/"([^"]+)": timedelta\((\w+)=(\d+)\)/g)].map(([, id, unit, n]) => ({
+      id,
+      seconds: unitSeconds[unit] * Number(n),
+    }));
+    expect(python.length).toBeGreaterThan(0);
+    expect(TIMEFRAMES).toEqual(python);
   });
 
   it("knows each timeframe's length and rejects unknown ones", () => {

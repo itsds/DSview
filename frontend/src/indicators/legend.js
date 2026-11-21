@@ -16,6 +16,7 @@ export function legendRowsAt(source, time) {
     paneIndex: indicator.paneIndex,
     visible: indicator.visible,
     hasSettings: indicator.hasSettings,
+    fromServer: indicator.fromServer,
     values: indicator.lines.map((line) => {
       const value = index >= 0 ? (line.values[index] ?? null) : null;
       const color = line.polarity ? (value !== null && value < 0 ? line.downColor : line.upColor) : line.color;

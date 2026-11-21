@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -61,7 +60,13 @@ def kafka_topics(test_services) -> None:
     from aiokafka.admin import AIOKafkaAdminClient, NewTopic
     from aiokafka.errors import TopicAlreadyExistsError
 
-    from config.settings import DEPTH_TOPIC, KAFKA_BOOTSTRAP_SERVERS, TRADES_TOPIC, WHALE_ALERTS_TOPIC
+    from config.settings import (
+        CANDLES_TOPIC,
+        DEPTH_TOPIC,
+        KAFKA_BOOTSTRAP_SERVERS,
+        TRADES_TOPIC,
+        WHALE_ALERTS_TOPIC,
+    )
 
     async def create() -> None:
         admin = AIOKafkaAdminClient(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
@@ -70,7 +75,7 @@ def kafka_topics(test_services) -> None:
             existing = set(await admin.list_topics())
             wanted = [
                 NewTopic(name=topic, num_partitions=1, replication_factor=1)
-                for topic in (TRADES_TOPIC, DEPTH_TOPIC, WHALE_ALERTS_TOPIC)
+                for topic in (TRADES_TOPIC, DEPTH_TOPIC, WHALE_ALERTS_TOPIC, CANDLES_TOPIC)
                 if topic not in existing
             ]
             if wanted:
@@ -142,12 +147,12 @@ def spark(kafka_topics):
     """One local SparkSession for every Spark test, built by streaming/spark_session.py."""
     from spark_session import get_spark_session
 
-    # Spark starts Python workers for local data (createDataFrame) with
-    # whatever `python3` is on PATH unless told otherwise, and refuses to run
-    # one whose version differs from the driver's. The jobs themselves never
-    # need workers; the tests' static DataFrames do.
-    os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
-
+    # get_spark_session() also points Spark's Python workers (pandas UDFs, and
+    # the tests' createDataFrame) at this interpreter. Those workers import
+    # streaming's modules by bare name (indicator_state.py's docstring); a
+    # job run from streaming/ has it on their path, the suite puts it there.
+    paths = [str(REPO_ROOT / "streaming"), os.environ.get("PYTHONPATH", "")]
+    os.environ["PYTHONPATH"] = os.pathsep.join(path for path in paths if path)
     session = get_spark_session("dsview-tests")
     try:
         yield session

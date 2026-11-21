@@ -9,7 +9,7 @@ Keep it current: tick a task when its commit lands, update the phase table
 when a phase is merged, and change the matching node's `status` in
 `docs/architecture.html` as each stage is built.
 
-Last updated: 2026-11-20
+Last updated: 2026-11-21
 
 ## Where things stand
 
@@ -17,7 +17,10 @@ Built and running end to end: live Binance trades → Redpanda → Spark
 (1-minute candles to Redis and Postgres; Bronze/Silver/Gold Parquet) →
 FastAPI (live candles over WebSocket, history over REST) → a
 `lightweight-charts` chart with backfill, scroll-back, six timeframes,
-drawing tools and browser-computed indicators. Whale trades flow from the
+drawing tools and indicators. EMA 20, 50 and 200 come from Spark on every
+timeframe, live and on history (candles → `market.candles.1m` →
+`applyInPandasWithState` → Postgres, Redis and Gold); every other
+indicator is computed in the browser. Whale trades flow from the
 detector to the `alerts.whales` topic, out through `/ws/whales` into the
 right panel, and through the Telegram bot to your phone. All hardcoded
 config lives in `config/settings.py`. `./scripts/test.sh` runs a pytest
@@ -45,7 +48,7 @@ then confirmed on the laptop for what only the laptop has.
 |---|---|---|
 | Kafka | Apache Kafka 4.3 (same protocol as Redpanda) | Redpanda via `docker compose` |
 | Redis, Postgres | Local installs | `docker compose` |
-| Spark + Kafka connector | Spark 3.5.9 on Java 21 | Spark on JDK 17 |
+| Spark + Kafka connector | Spark 3.5.9 on JDK 17 (Java 21 breaks the Arrow transfer `applyInPandasWithState` uses) | Spark on JDK 17 |
 | Frontend | Real Chromium via Playwright | Your browser |
 | Live market data | Blocked: synthetic trades through ingestion's real producer | Live Binance |
 | Telegram API | Blocked: a fake Telegram server | Your real bot |
@@ -56,8 +59,8 @@ then confirmed on the laptop for what only the laptop has.
 | Phase | Goal | Size | Status |
 |---|---|---|---|
 | 0 | Prerequisites (owner) | S | Done |
-| 1 | Finish whale tracking; make everything trustworthy | M | In progress |
-| 2 | Technical indicators in Spark | L | Not started |
+| 1 | Finish whale tracking; make everything trustworthy | M | Done |
+| 2 | Technical indicators in Spark | L | In progress |
 | 3 | History backfill + volume footprint | XL | Not started |
 | 4 | Replay, backtest, long/short ratio | L | Not started |
 | 5 | More markets | L | Not started |
@@ -121,26 +124,72 @@ test suite passes.
 
 ## Phase 2 — technical indicators in Spark
 
-- [ ] Spark job computing EMA and RSI (and whichever others are chosen) over
-      1-minute candles, keeping running state between windows; written to
-      Redis (live), Postgres (history) and Gold.
-- [ ] Backend: REST history and live push for indicator values.
-- [ ] Frontend: switch `compute()` in `indicators/definitions.js` to the
-      backend's values for the standard set.
+- [x] `candle_aggregator.py` also publishes every 1m candle update to a new
+      topic, `market.candles.1m` (decision 3 below): `streaming/candle_topic.py`.
+- [x] Spark job computing EMA 20, 50 and 200 on all six timeframes from that
+      topic, keeping running state between candles with
+      `applyInPandasWithState`; written to Redis (live) and Postgres
+      (history), with history warmed up from `candles_1m` on first start:
+      `streaming/jobs/indicators.py`, around `indicator_engine.py` (the
+      math) and `indicator_state.py` (the Spark state).
+- [x] Gold: the same computation over Gold's finalized candles, into
+      `gold/indicators` (a fourth query in `storage_writer.py`).
+- [x] Backend: REST history and live push for indicator values: each
+      candle from `GET /candles` carries its `indicators`, and
+      `/ws/indicators/{symbol}?timeframe=` pushes changed bars.
+- [x] Frontend: switch `compute()` in `indicators/definitions.js` to the
+      backend's values for the standard set (`indicators/server.js`,
+      `hooks/useLiveIndicators.js`).
 
-**Kickoff decisions:** the UI accepts any indicator settings, but Spark can
-only precompute a fixed set. Choose which indicators, settings and
-timeframes Spark computes; anything custom stays computed in the browser.
+Found along the way and fixed in this phase: the chart's scroll-back
+could fire before the first history page landed (when the live candle got
+there first) and then throw "data must be asc ordered"; and Spark 3.5's
+streaming Parquet source misreads a schema whose partition column isn't
+last, which crashed the JVM until the Gold indicator query's read schema
+was reordered.
+
+**Kickoff decisions** (made 2026-11-21):
+
+1. **Indicators: EMA 20, 50 and 200.** 20 is the chart's default length, 50
+   and 200 the usual trend lengths. These gain most from Spark: an EMA
+   depends on every bar before it, so the browser's value depends on how
+   much history happens to be loaded (with 300 bars, its EMA 200 still
+   carries ~37% of its starting guess at the newest bar). Everything else
+   (RSI, MACD, VWAP, SMA, Bollinger, and EMA at any other length) stays
+   computed in the browser.
+2. **Timeframes: all six** (1m, 5m, 15m, 1h, 4h, 1D), rolled up from 1m
+   candles in the chart's own epoch-aligned buckets. The big timeframes
+   stay sparse until Phase 3's backfill adds history.
+3. **State: Spark's stateful API**, `applyInPandasWithState`, keyed by
+   symbol and checkpointed. Spark 3.5 refuses to run it after a streaming
+   aggregation in the same query (in update mode and in append mode alike;
+   checked at kickoff), so the candles reach it through a Kafka topic
+   rather than straight from `candle_windowing.py`. It needs pandas and
+   pyarrow, pinned below the versions Spark 3.5 breaks on.
 
 **Done when:** Spark's values match the browser's `indicators/math.js` on
 identical candles (a golden test in the suite), and the chart shows server
 values both live and on history.
+
+Met in the cloud container: golden tests require exact equality with
+math.js for the engine alone, from trades through both Spark jobs into
+Postgres, and for Gold; an end-to-end run with ten hours of history and
+live synthetic trades showed no mismatch on any bar of any timeframe,
+before and after a restart from the checkpoint, and Chromium showed
+Spark's values live and on scroll-back. Left for the laptop: the same
+with live Binance data.
 
 ## Phase 3 — history backfill + volume footprint
 
 - [ ] Backfill job: pages Binance REST `aggTrades` into Bronze and
       `candles_1m`; safe to rerun. Also fixes the thin chart on higher
       timeframes.
+- [ ] Rebuild the indicators after a backfill: an EMA depends on every bar
+      before it, so history inserted before the oldest stored candle
+      changes every value after it. Today that means deleting
+      `_checkpoints/indicators` (the next start warms up from `candles_1m`
+      again) and, for Gold, `_checkpoints/gold/indicators` with
+      `gold/indicators`; the backfill could do this itself.
 - [ ] Footprint: buy and sell volume per price level within each candle,
       computed in Spark, stored in a new `footprint_1m` table and in Redis.
 - [ ] Optional (a suggestion in the diagram): an append-mode Gold copy,
@@ -210,6 +259,10 @@ the UI works end to end; gold runs with footprint and whale detection off.
       second or two misses nothing). Needs a fetch since the last bar,
       merged like a scroll-back page, plus reseeding
       `useTimeframeCandle`'s open bucket.
+- [ ] Chart: the browser's VWAP starts at the first loaded bar rather than
+      at midnight UTC, so on 1m (300 bars, five hours) it is wrong for most
+      of the day. Found at Phase 2's kickoff; VWAP wasn't chosen for Spark.
+      Fix by fetching the day's bars for it, or move it to Spark.
 - [ ] Optional (suggestions in the diagram): a batch scheduler and a
       Gold → Postgres sync.
 

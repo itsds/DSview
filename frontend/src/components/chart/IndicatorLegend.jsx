@@ -7,7 +7,8 @@
  *
  * Values are in text colours; a short swatch in the line's colour (and
  * dash) beside each value says which line it is, so identity never rests
- * on coloured text. PaneLegend places the same rows at the top of an
+ * on coloured text. The name's tooltip says where the values came from:
+ * Spark (streaming/jobs/indicators.py) or the browser (indicators/math.js). PaneLegend places the same rows at the top of an
  * oscillator's own pane; Legend.jsx shows the over-the-candles ones.
  *
  * Author: @DS
@@ -24,7 +25,9 @@ function formatValue(value) {
 export function IndicatorLegendRow({ row, actions }) {
   return (
     <div className={row.visible ? styles.row : `${styles.row} ${styles.hidden}`}>
-      <span className={styles.name}>{row.label}</span>
+      <span className={styles.name} title={row.fromServer ? "Computed by Spark" : "Computed in the browser"}>
+        {row.label}
+      </span>
       {row.visible &&
         row.values.map((line) => (
           <span key={line.key} className={styles.value} title={line.label}>
