@@ -149,3 +149,18 @@ TIMEFRAMES: Dict[str, timedelta] = {
 # is computed in the browser. Each is a column of storage/ddl/indicators.sql
 # (ema_20, ...) and must match frontend/src/indicators/server.js.
 SERVER_EMA_LENGTHS: Tuple[int, ...] = (20, 50, 200)
+
+# The price step footprint_1m stores buy and sell volume at (Phase 3's
+# kickoff decision 3): a trade's volume counts towards the level
+# floor(price / step) * step, so with $1 a trade at 97,000.40 lands on the
+# 97,000 row. streaming/footprint_windowing.py (live) and
+# backfill/footprint_rows.py (history) both bucket by it; the backend merges
+# rows to multiples of it ($5, $10, ...) for display. Changing it means
+# emptying footprint_1m and backfilling again. Must match
+# frontend/src/footprint/levels.js.
+FOOTPRINT_PRICE_STEP: Decimal = Decimal("1")
+
+# The chart timeframes the footprint is served on (decision 4): 4h and 1D
+# stay plain candles. The volume profile tools work on every timeframe.
+# Must match frontend/src/footprint/levels.js.
+FOOTPRINT_TIMEFRAMES: Tuple[str, ...] = ("1m", "5m", "15m", "1h")

@@ -11,6 +11,16 @@ history reads) via foreachBatch — and publishes every candle update to
 the market.candles.1m topic (candle_topic.py), which jobs/indicators.py
 computes the indicators from.
 
+The same application runs a second query, the live **volume footprint**
+(Phase 3b): footprint_windowing.build_footprint() over the same trades,
+buy and sell volume per price level per minute, every level a batch
+changed upserted into Postgres's footprint_1m and each touched minute's
+whole grid pushed through Redis (FootprintRedisSink). Its own query
+because a streaming query holds one aggregation; this app rather than a
+new one because another Spark process costs another JVM. It shares
+build_candles()'s window and watermark (see footprint_windowing.py), so a
+minute's levels add up to that minute's candle volume.
+
 Runs in outputMode("update"): Redis/Postgres want to see a window's
 values refine in real time as more trades arrive, not just its final
 value. jobs/storage_writer.py's Gold Parquet writer uses outputMode
@@ -39,8 +49,9 @@ from datetime import timezone
 
 from candle_topic import publish_candles
 from candle_windowing import build_candles
-from postgres_sink import CandlePostgresSink
-from redis_sink import CandleRedisSink
+from footprint_windowing import build_footprint
+from postgres_sink import CandlePostgresSink, FootprintPostgresSink
+from redis_sink import CandleRedisSink, FootprintRedisSink
 from spark_session import get_spark_session
 from trades_source import read_trades_stream
 
@@ -86,18 +97,55 @@ def build_candle_query(
     )
 
 
+_FOOTPRINT_COLUMNS = ("symbol", "window_start", "price", "buy_volume", "sell_volume")
+
+
+def build_footprint_query(
+    spark, redis_sink: FootprintRedisSink, postgres_sink: FootprintPostgresSink
+) -> "pyspark.sql.streaming.StreamingQuery":  # noqa: F821
+    """Wire up the read -> parse -> footprint-aggregate -> Postgres+Redis pipeline."""
+    levels = build_footprint(read_trades_stream(spark)).select(*_FOOTPRINT_COLUMNS)
+
+    def _write_batch(batch_df, batch_id: int) -> None:
+        rows = []
+        for row in batch_df.collect():
+            level = row.asDict()
+            # collect()'s naive local time again (see _row_to_candle).
+            level["window_start"] = level["window_start"].astimezone(timezone.utc)
+            rows.append(level)
+        if not rows:
+            return
+        # Postgres first: a client that hears of a minute from Redis and then
+        # asks the REST API for it finds at least what it heard.
+        postgres_sink.write_rows(rows)
+        redis_sink.write_rows(rows)
+
+    return (
+        levels.writeStream.outputMode("update")
+        .foreachBatch(_write_batch)
+        .trigger(processingTime="5 seconds")
+        .start()
+    )
+
+
 def main() -> None:
     spark = get_spark_session("dsview-candle-aggregator")
     redis_sink = CandleRedisSink()
     postgres_sink = CandlePostgresSink()
-    query = build_candle_query(spark, redis_sink, postgres_sink)
+    footprint_postgres_sink = FootprintPostgresSink()
+    queries = [
+        build_candle_query(spark, redis_sink, postgres_sink),
+        build_footprint_query(spark, FootprintRedisSink(), footprint_postgres_sink),
+    ]
     try:
-        query.awaitTermination()
+        spark.streams.awaitAnyTermination()
     except KeyboardInterrupt:
         pass
     finally:
-        query.stop()
+        for query in queries:
+            query.stop()
         postgres_sink.close()
+        footprint_postgres_sink.close()
         spark.stop()
 
 
