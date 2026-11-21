@@ -98,6 +98,7 @@ export default function CandleChart({
   const indicatorsRef = useRef(null);
   const serverValuesRef = useRef(null);
   const lastBarTimeRef = useRef(null);
+  const historyLoadedRef = useRef(false);
   const loadingOlderRef = useRef(false);
   const reachedStartRef = useRef(false);
   const [hoveredBar, setHoveredBar] = useState(null);
@@ -159,19 +160,27 @@ export default function CandleChart({
     // Prepends the page before the oldest loaded bar. Merges with
     // series.data() rather than the original history page, so bars that
     // live updates appended since the chart loaded survive.
+    //
+    // Only once the first page is in: the live candle can reach the chart
+    // before it, and paging back from that lone bar fetched the very page
+    // still loading, which then landed after it out of order (setData()
+    // throws on that). For the same reason, only bars older than the
+    // chart's first are kept.
     const loadOlder = async () => {
-      if (loadingOlderRef.current || reachedStartRef.current) return;
+      if (!historyLoadedRef.current || loadingOlderRef.current || reachedStartRef.current) return;
       const loaded = candleSeries.data();
-      if (loaded.length === 0) return; // first page not in yet
+      if (loaded.length === 0) return;
       loadingOlderRef.current = true;
       try {
         const older = await fetchCandles(symbol, { timeframe, before: loaded[0].time });
         if (disposed) return;
         if (older.length < HISTORY_PAGE_SIZE) reachedStartRef.current = true;
-        if (older.length === 0) return;
-        serverValues.addHistory(older);
-        candleSeries.setData([...older.map(toChartBar), ...candleSeries.data()]);
-        volumeSeries.setData([...older.map((c) => toVolumeBar(c, theme)), ...volumeSeries.data()]);
+        const first = candleSeries.data()[0].time;
+        const page = older.filter((candle) => candleTime(candle) < first);
+        if (page.length === 0) return;
+        serverValues.addHistory(page);
+        candleSeries.setData([...page.map(toChartBar), ...candleSeries.data()]);
+        volumeSeries.setData([...page.map((c) => toVolumeBar(c, theme)), ...volumeSeries.data()]);
         indicatorManager.refresh({ full: true });
       } catch (error) {
         console.error("Loading older candles failed:", error);
@@ -225,6 +234,7 @@ export default function CandleChart({
     candleSeriesRef.current.setData(bars);
     volumeSeriesRef.current.setData(history.map((c) => toVolumeBar(c, theme)));
     lastBarTimeRef.current = bars[bars.length - 1].time;
+    historyLoadedRef.current = true;
     // A short first page is all the history there is.
     reachedStartRef.current = history.length < HISTORY_PAGE_SIZE;
     indicatorsRef.current.refresh({ full: true });
