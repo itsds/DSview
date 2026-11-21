@@ -11,7 +11,9 @@ Spark state (indicator_state.py, around indicator_engine.py), and in a
 foreachBatch writes every changed bar to Postgres's candle_indicators
 (history: GET /candles returns it with each candle) and Redis (live push:
 /ws/indicators). The first batch that sees a symbol also writes its
-indicators over all of candles_1m (indicator_state.py's warm-up).
+indicators over all of candles_1m (indicator_state.py's warm-up), and so
+does the first batch after backfill/ changed that history (its rebuild,
+triggered by candle_revisions: no restart needed).
 
 **Checkpoint.** Unlike candle_aggregator.py, this query keeps a checkpoint
 (`DATA_ROOT/_checkpoints/indicators` by default): it holds the EMA state
@@ -19,7 +21,8 @@ and the topic offsets, so a restart resumes exactly where it stopped,
 replaying candles published while it was down rather than skipping them.
 To rebuild everything from candles_1m (after changing SERVER_EMA_LENGTHS,
 say, which the saved state refuses), stop the job and delete that
-directory; the next start warms every symbol up again. If it stays down
+directory; the next start warms every symbol up again. A backfill needs
+none of that: it asks for a rebuild itself. If it stays down
 longer than the topic's retention, its saved offsets are gone and Spark
 stops with a data-loss error rather than silently skip candles: rebuild
 the same way.
@@ -44,7 +47,7 @@ from config.settings import DATA_ROOT
 from candle_topic import ensure_candles_topic, read_candles_stream
 from indicator_engine import INDICATOR_COLUMNS
 from indicator_state import compute_indicators
-from postgres_sink import IndicatorPostgresSink, read_minute_closes
+from postgres_sink import IndicatorPostgresSink, read_candle_revision, read_minute_closes
 from redis_sink import IndicatorRedisSink
 from spark_session import get_spark_session
 
@@ -74,7 +77,9 @@ def build_indicator_query(
     verbose: bool = True,
 ) -> "pyspark.sql.streaming.StreamingQuery":  # noqa: F821
     """Wire up candle topic -> per-symbol EMA state -> Postgres + Redis. The topic must exist (see main())."""
-    indicators = compute_indicators(read_candles_stream(spark), order_by="offset", warm_up=read_minute_closes)
+    indicators = compute_indicators(
+        read_candles_stream(spark), order_by="offset", warm_up=read_minute_closes, revision=read_candle_revision
+    )
 
     def _write_batch(batch_df, batch_id: int) -> None:
         # Bar starts as Unix seconds rather than collect()'s naive local

@@ -211,3 +211,46 @@ async def test_changed_bars_are_published_and_the_newest_cached_in_redis(
     starts = [m["window_start"] for m in published]
     assert starts == sorted(starts)
     pubsub.close()
+
+
+async def test_a_backfill_rebuilds_the_indicators_without_a_restart(start_indicator_query, candle_producer, pg, symbol):
+    """
+    History inserted before the oldest stored candle changes every EMA after
+    it. Once the backfill bumps the symbol's revision, the running query's
+    next batch rebuilds the symbol from candles_1m: every bar ends up as
+    math.js computes it over the whole history, old and new.
+    """
+    from candle_store import CandleStore  # backfill/'s, the bump the real backfill makes
+
+    minutes = golden_minutes(330, BASE, seed=13)
+    older, stored, live = minutes[:230], minutes[230:300], minutes[300:]
+
+    def insert(candles):
+        with pg.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO candles_1m (symbol, window_start, window_end, open, high, low, close, volume, trade_count)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 1, 1)
+                """,
+                [(symbol, _iso(m), _iso(m + 60), c, c, c, c) for m, c in candles],
+            )
+
+    async def go_live(candles):
+        insert(candles)  # candle_aggregator.py upserts candles_1m before it publishes
+        await _send_candles(candle_producer, symbol, candles)
+
+    insert(stored)
+    start_indicator_query()
+    await go_live(live[:10])
+    _wait_until_stored(pg, symbol, math_js_ema(minutes[230:310], TIMEFRAME_SECONDS, SERVER_EMA_LENGTHS))
+
+    insert(older)  # what the backfill writes...
+    store = CandleStore()
+    try:
+        store.bump_revision(symbol)  # ...and how it says so
+    finally:
+        store.close()
+    await go_live(live[10:])
+
+    _wait_until_stored(pg, symbol, math_js_ema(minutes, TIMEFRAME_SECONDS, SERVER_EMA_LENGTHS))
+    pg.execute("DELETE FROM candle_revisions WHERE symbol = %s", (symbol,))
