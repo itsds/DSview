@@ -161,6 +161,7 @@ export default function CandleChart({
       element: wrapperRef.current,
       store: drawingStore,
       theme,
+      symbol,
       barSeconds: timeframeSeconds(timeframe),
       onToolChange,
       onTextRequest: (point, done) => setTextRequest({ x: point.x, y: point.y, done }),

@@ -14,6 +14,7 @@ import {
   mergeLevels,
   parseLevels,
   pickRowSize,
+  valueArea,
 } from "./levels.js";
 
 const settings = readFileSync(new URL("../../../config/settings.py", import.meta.url), "utf8");
@@ -93,6 +94,22 @@ describe("barStats", () => {
     const stats = barStats([level(100, 0, 5), level(105, 50, 0), level(106, 10, 0)], 1);
     expect(stats.buyImbalance.size).toBe(0); // 105 is no neighbour of 100; 106 is, but 105 sold nothing
     expect(barStats([level(100, 50, 0), level(110, 0, 50)], 10).sellImbalance.size).toBe(0);
+  });
+});
+
+describe("valueArea", () => {
+  it("grows from the point of control towards the busier neighbour until it holds 70%", () => {
+    // Volumes by row: 1, 2, 10, 4, 3 (total 20). From 10: above 4 vs below 2 → 4
+    // (14 of 20, 70%): done. For 80%: above 3 vs below 2 → 3 (17, 85%).
+    const rows = [1, 2, 10, 4, 3].map((volume, i) => level(100 + 5 * i, volume, 0));
+    expect(valueArea(rows)).toEqual({ poc: 110, low: 110, high: 115 });
+    expect(valueArea(rows, 0.8)).toEqual({ poc: 110, low: 110, high: 120 });
+    expect(valueArea(rows, 0.5)).toEqual({ poc: 110, low: 110, high: 110 });
+    expect(valueArea(rows, 1)).toEqual({ poc: 110, low: 100, high: 120 });
+  });
+
+  it("has nothing for no rows", () => {
+    expect(valueArea([])).toBeNull();
   });
 });
 

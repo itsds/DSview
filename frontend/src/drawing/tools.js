@@ -8,9 +8,11 @@
  * tools never touch the chart API directly.
  *
  * Every draw() and hit() receives the same context:
- *   { drawing, pts, selected, size, theme, coords, bars }
+ *   { drawing, pts, selected, size, theme, coords, bars, profiles }
  * where `bars` (barData.js) reads the chart's candles, for tools drawn from
- * price data rather than from their anchors alone.
+ * price data rather than from their anchors alone, and `profiles`
+ * (profileData.js) the volume profile of a time range, for the volume
+ * profile tools.
  *
  * Besides `anchors`, draw() and hit(), a tool can define:
  *   - create(points, coords): the points to store, given the clicks that
@@ -31,7 +33,9 @@
  * Author: @DS
  */
 
+import { formatVolume, valueArea } from "../footprint/levels.js";
 import { anchoredVwap } from "../indicators/math.js";
+import { bucketStart } from "../lib/timeframes.js";
 
 // The "no tool" pointer: selects and drags drawings instead of placing them.
 export const CROSSHAIR_TOOL = "crosshair";
@@ -364,6 +368,124 @@ function strokablePath(line) {
   ];
 }
 
+// --- Volume profiles ---
+//
+// Volume at each price over a range of bars, as a horizontal histogram
+// along the range's left edge: buy volume then sell volume per row, the
+// value area (70% of the volume around the point of control) solid and
+// the rest faint, the point of control as a line across the range. Built
+// from footprint_1m's real price-level volume (profiles, profileData.js),
+// never spread out from OHLCV, on any timeframe.
+//
+// Fixed range: from the bar the first anchor falls in through the bar the
+// second does. Anchored: from the anchor's bar through the latest bar, so
+// it grows with live data. Both are still filling while they reach the
+// bar in progress, and are fetched again as it forms.
+
+const PROFILE_ROWS = 24; // TradingView's default "number of rows"
+const PROFILE_WIDTH = 0.3; // the longest row, as a share of the range's width
+const PROFILE_VALUE_AREA = 0.7;
+
+// The profile's range and placement in pixels, and the profile itself
+// (null while it loads); null when the range can't be placed yet.
+function volumeProfile({ drawing, coords, bars, profiles }) {
+  const times = drawing.points.map((p) => p.time);
+  const first = bucketStart(Math.min(...times), coords.barSeconds);
+  const latest = bars.between(first).at(-1)?.time;
+  if (latest === undefined) return null;
+  const last = drawing.type === "anchored-volume-profile" ? latest : bucketStart(Math.max(...times), coords.barSeconds);
+  const end = last + coords.barSeconds;
+  const open = end > Date.now() / 1000; // still filling: up to now, refreshed
+  const left = coords.timeToX(first);
+  const right = coords.timeToX(last);
+  if (left === null || right === null) return null;
+  const halfBar = Math.abs(coords.indexToX(1) - coords.indexToX(0)) / 2;
+  return {
+    first,
+    left: Math.min(left, right) - halfBar,
+    right: Math.max(left, right) + halfBar,
+    profile: profiles.get(first, open ? null : end, PROFILE_ROWS),
+  };
+}
+
+// The box the profile fills, in pixels, or null without rows to place.
+function profileBox(placed, coords) {
+  const levels = placed?.profile?.levels;
+  if (!levels || levels.length === 0) return null;
+  const top = coords.priceToY(levels[levels.length - 1].price + placed.profile.rowSize);
+  const bottom = coords.priceToY(levels[0].price);
+  return top === null || bottom === null ? null : { left: placed.left, right: placed.right, top, bottom };
+}
+
+function formatUtc(seconds) {
+  return new Date(seconds * 1000).toISOString().slice(5, 16).replace("T", " "); // MM-DD HH:MM, UTC like the axis
+}
+
+function drawVolumeProfile(ctx, context) {
+  const { pts, theme, coords } = context;
+  const placed = volumeProfile(context);
+  const box = profileBox(placed, coords);
+  if (!box) {
+    // Loading, or nothing in the range: mark where it goes.
+    const r = placed ? { left: placed.left, right: placed.right } : bounds(pts[0], pts[pts.length - 1]);
+    const y = pts[0].y;
+    strokeLine(ctx, { x: r.left, y }, { x: r.right, y }, theme.accent, { width: 1, dash: [4, 4] });
+    const text = !placed || placed.profile === null ? "Loading volume profile…" : "No footprint data in this range";
+    ctx.font = font(LABEL_SIZE_PX, theme);
+    ctx.fillStyle = theme.textMuted;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(text, r.left + 4, y - 4);
+    return;
+  }
+
+  const { levels, rowSize, firstMinute } = placed.profile;
+  const area = valueArea(levels, PROFILE_VALUE_AREA);
+  const volumes = levels.map((row) => row.buy + row.sell);
+  const maxVolume = Math.max(...volumes) || 1;
+  const width = (box.right - box.left) * PROFILE_WIDTH;
+
+  ctx.fillStyle = theme.accentSoft;
+  ctx.fillRect(box.left, box.top, box.right - box.left, box.bottom - box.top);
+  levels.forEach((row) => {
+    const top = coords.priceToY(row.price + rowSize);
+    const bottom = coords.priceToY(row.price);
+    if (top === null || bottom === null) return;
+    const height = Math.max(1, bottom - top - 1);
+    const inside = row.price >= area.low && row.price <= area.high;
+    ctx.globalAlpha = inside ? 0.8 : 0.35;
+    const buyWidth = (width * row.buy) / maxVolume;
+    ctx.fillStyle = theme.up;
+    ctx.fillRect(box.left, top, buyWidth, height);
+    ctx.fillStyle = theme.down;
+    ctx.fillRect(box.left + buyWidth, top, (width * row.sell) / maxVolume, height);
+  });
+  ctx.globalAlpha = 1;
+
+  const pocY = coords.priceToY(area.poc + rowSize / 2);
+  if (pocY !== null) strokeLine(ctx, { x: box.left, y: pocY }, { x: box.right, y: pocY }, theme.warning, { width: 1.5 });
+
+  const total = volumes.reduce((sum, v) => sum + v, 0);
+  const lines = [`Vol ${formatVolume(total)} · POC ${coords.formatPrice(area.poc + rowSize / 2)} · $${rowSize} rows`];
+  // The footprint starts later than the range: say the profile is partial.
+  if (firstMinute !== null && firstMinute > placed.first + coords.barSeconds) lines.push(`Footprint from ${formatUtc(firstMinute)} UTC`);
+  ctx.font = font(LABEL_SIZE_PX, theme);
+  ctx.fillStyle = theme.textMuted;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  // Under the box, kept inside the pane: a range up to the newest bar ends at the price scale.
+  const widest = Math.max(...lines.map((line) => ctx.measureText(line).width));
+  const x = Math.max(0, Math.min(box.left + 2, context.size.width - widest - 4));
+  lines.forEach((line, i) => ctx.fillText(line, x, box.bottom + LABEL_GAP_PX + i * (LABEL_SIZE_PX + 3)));
+}
+
+function hitVolumeProfile(context, x, y) {
+  const box = profileBox(volumeProfile(context), context.coords);
+  if (box) return contains(box, x, y, HIT_TOLERANCE_PX);
+  const { pts } = context;
+  return contains(bounds(pts[0], pts[pts.length - 1]), x, y, HIT_TOLERANCE_PX);
+}
+
 export const TOOLS = {
   "trend-line": {
     anchors: 2,
@@ -640,5 +762,17 @@ export const TOOLS = {
       const path = strokablePath(anchoredVwapLine(context));
       return path.some((point, i) => i > 0 && distanceToLine(x, y, path[i - 1], point) <= HIT_TOLERANCE_PX);
     },
+  },
+
+  "fixed-range-volume-profile": {
+    anchors: 2,
+    draw: drawVolumeProfile,
+    hit: hitVolumeProfile,
+  },
+
+  "anchored-volume-profile": {
+    anchors: 1,
+    draw: drawVolumeProfile,
+    hit: hitVolumeProfile,
   },
 };

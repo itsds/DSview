@@ -114,6 +114,33 @@ export function barStats(rows, rowSize) {
   return { poc, delta, total, maxCell, buyImbalance, sellImbalance };
 }
 
+/**
+ * A volume profile's value area: the rows around the point of control
+ * holding `share` (70%) of the volume, grown the usual way — one row at a
+ * time towards whichever neighbour, above or below, traded more. Returns
+ * { poc, low, high }: the POC row's price and the lowest and highest rows'
+ * prices (lower bounds); null for no rows.
+ */
+export function valueArea(rows, share = 0.7) {
+  if (rows.length === 0) return null;
+  const volumes = rows.map((row) => row.buy + row.sell);
+  const total = volumes.reduce((sum, v) => sum + v, 0);
+  let pocIndex = 0;
+  volumes.forEach((volume, i) => {
+    if (volume > volumes[pocIndex]) pocIndex = i;
+  });
+  let low = pocIndex;
+  let high = pocIndex;
+  let inside = volumes[pocIndex];
+  while (inside < share * total && (low > 0 || high < rows.length - 1)) {
+    const below = low > 0 ? volumes[low - 1] : -1;
+    const above = high < rows.length - 1 ? volumes[high + 1] : -1;
+    if (above >= below) inside += volumes[++high];
+    else inside += volumes[--low];
+  }
+  return { poc: rows[pocIndex].price, low: rows[low].price, high: rows[high].price };
+}
+
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 
 /** A cell's volume in at most ~4 characters: 0, 0.42, 3.17, 12.5, 128, 1.2K. */

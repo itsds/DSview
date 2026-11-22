@@ -24,10 +24,11 @@ function formatTime(time) {
 }
 
 export class DrawingLayer {
-  constructor({ theme, coords, bars, getState }) {
+  constructor({ theme, coords, bars, profiles, getState }) {
     this._theme = theme;
     this._coords = coords;
     this._bars = bars;
+    this._profiles = profiles;
     this._getState = getState;
     this._chart = null;
     this._requestUpdate = null;
@@ -124,7 +125,7 @@ export class DrawingLayer {
   // --- internals ---
 
   _context(item, size = this._size) {
-    return { ...item, size, theme: this._theme, coords: this._coords, bars: this._bars };
+    return { ...item, size, theme: this._theme, coords: this._coords, bars: this._bars, profiles: this._profiles };
   }
 
   _axisLabel(coordinate, text) {
