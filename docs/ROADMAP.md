@@ -9,7 +9,7 @@ Keep it current: tick a task when its commit lands, update the phase table
 when a phase is merged, and change the matching node's `status` in
 `docs/architecture.html` as each stage is built.
 
-Last updated: 2026-11-21
+Last updated: 2026-11-22
 
 ## Where things stand
 
@@ -25,7 +25,11 @@ detector to the `alerts.whales` topic, out through `/ws/whales` into the
 right panel, and through the Telegram bot to your phone. A re-runnable
 backfill fills `candles_1m` a year back from Binance's REST klines and
 lands 30 days of aggTrades in Bronze, after which the live indicators
-rebuild themselves. All hardcoded
+rebuild themselves. The volume footprint (buy and sell volume per $1
+price level per minute) is computed live in Spark next to the candles
+and backfilled from those aggTrades; the chart draws it on 1m to 1h once
+zoomed in, and fixed-range and anchored volume profiles work on every
+timeframe. All hardcoded
 config lives in `config/settings.py`. `./scripts/test.sh` runs a pytest
 suite over real Kafka, Redis and Postgres plus the frontend's Vitest
 tests, and GitHub Actions runs it on every push.
@@ -64,8 +68,8 @@ then confirmed on the laptop for what only the laptop has.
 | 0 | Prerequisites (owner) | S | Done |
 | 1 | Finish whale tracking; make everything trustworthy | M | Done |
 | 2 | Technical indicators in Spark | L | Done |
-| 3a | History backfill | M | In progress |
-| 3b | Volume footprint | L | Not started |
+| 3a | History backfill | M | Done |
+| 3b | Volume footprint | L | In progress |
 | 4 | Replay, backtest, long/short ratio | L | Not started |
 | 5 | More markets | L | Not started |
 | 6 | Production readiness | L | Not started |
@@ -249,17 +253,61 @@ aggTrades).
 
 ### Phase 3b — volume footprint
 
-- [ ] Footprint: buy and sell volume per $1 price level within each
+- [x] Footprint: buy and sell volume per $1 price level within each
       candle, computed in Spark, stored in a new `footprint_1m` table and
-      in Redis; history for the backfilled range from Bronze's aggTrades.
-- [ ] Optional (a suggestion in the diagram): an append-mode Gold copy,
-      `gold/footprint_1m`.
-- [ ] Backend: `GET /footprint/{symbol}` plus live push.
-- [ ] Frontend: a footprint overlay drawn on the chart (1m to 1h), and the
-      fixed-range and anchored volume profile tools.
+      in Redis; history for the backfilled range from Bronze's aggTrades:
+      `streaming/footprint_windowing.py` (a second query in
+      `candle_aggregator.py`'s app, with the candles' window and
+      watermark), `storage/ddl/footprint.sql`, and
+      `backfill/footprint_rows.py` for the history.
+- [x] Optional (a suggestion in the diagram): an append-mode Gold copy,
+      `gold/footprint_1m` (a fifth query in `storage_writer.py`).
+- [x] Backend: `GET /footprint/{symbol}` plus live push
+      (`/ws/footprint/{symbol}`), and `GET /footprint/{symbol}/profile`
+      for the volume profiles: `backend/routers/footprint.py`.
+- [x] Frontend: a footprint overlay drawn on the chart (1m to 1h), and the
+      fixed-range and anchored volume profile tools: `frontend/src/footprint/`,
+      the chart type menu in the top bar, and two drawing tools.
+
+**Choices made while building** (inside the kickoff decisions; easy to
+change if you'd rather they went another way):
+
+- **Cells:** each bar shows bid × ask, the volume sold at the bid on the
+  left and bought at the ask on the right, tinted by size, the point of
+  control outlined, diagonal imbalances (3:1) in bold, and the bar's delta
+  beneath. A slim candle runs along each column's left edge.
+- **When it shows:** bars at least 48 px apart; turning the footprint on
+  zooms to 72 px. Auto row size is the smallest of $1, $2, $5, $10, $25,
+  $50, $100, $250, $500 or $1000 whose rows are 14 px tall; the chart type
+  menu fixes one instead.
+- **Volume profiles:** 24 rows over the range's traded prices
+  (TradingView's default), a 70% value area, buy and sell split per row.
+- **Gold copy built**, as the diagram suggested: a past minute's
+  footprint or profile can be rebuilt from Gold without replaying Bronze.
+
+Found along the way and fixed in this phase: lightweight-charts' default
+right margin is 8 bars, which at footprint widths is half the screen, so
+the footprint narrows it to 2 while it shows.
 
 **Done when:** each candle's footprint buy + sell volume equals its candle
 volume; the footprint renders live and on history.
+
+Met in the cloud container, with the live pipeline on synthetic trades
+and the backfill against a fake Binance (`tests/fake_binance.py`): every
+one of 3,038 minutes with a footprint (two days backfilled from aggTrades
+plus the live minutes) adds up exactly to its candle's volume, with no
+duplicate level and no footprint without a candle; the live minute's
+grid reaches `/ws/footprint` every 5 s; Gold's footprint equals Postgres
+for every finalized live minute; a rerun of the backfill fetched only
+today and replaced the live minutes with the exchange's, still exact;
+the minute still forming can be a batch apart between the candle and
+footprint queries and agrees once it closes. Chromium showed the
+footprint on history and updating live on 1m and 5m, plain candles when
+zoomed out and on 4h/1D, and both volume profile tools placed through the
+toolbar. Postgres timings over 30 days (1.4 million rows): a screen of 1m
+bars 5 ms, 100 hourly bars 0.2 s, a 30-day profile 0.2 s; the backfill
+adds about a second per million aggTrades. Left for the laptop: the same
+with live Binance, where real trades crowd many more onto each level.
 
 ## Phase 4 — replay, backtest, long/short ratio
 
