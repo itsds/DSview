@@ -23,6 +23,11 @@
  * of candles and, for the bar in progress, from useLiveIndicators.js; they
  * go into one store per chart, which the manager reads on every refresh.
  *
+ * The volume footprint is footprint/FootprintManager.js's: created with the
+ * chart on a footprint timeframe (1m to 1h), turned on and off with the
+ * chart type, told the row size setting and every live minute from
+ * useLiveFootprint.js; the legend says what it's showing.
+ *
  * Mounted once per symbol + timeframe (App.jsx keys it), so a switch gets
  * a fresh chart and fresh refs instead of resetting them by hand.
  *
@@ -37,6 +42,9 @@ import { CandlestickSeries, HistogramSeries, createChart } from "lightweight-cha
 
 import { HISTORY_PAGE_SIZE, fetchCandles } from "../../api/candles.js";
 import { DrawingController } from "../../drawing/DrawingController.js";
+import { FootprintManager } from "../../footprint/FootprintManager.js";
+import { FOOTPRINT_TIMEFRAMES } from "../../footprint/levels.js";
+import { useLiveFootprint } from "../../hooks/useLiveFootprint.js";
 import { useLiveIndicators } from "../../hooks/useLiveIndicators.js";
 import { IndicatorManager } from "../../indicators/IndicatorManager.js";
 import { legendRowsAt } from "../../indicators/legend.js";
@@ -69,6 +77,16 @@ function toVolumeBar(candle, theme) {
   };
 }
 
+// The legend's line for the footprint, from FootprintManager's status.
+function footprintNote(chartType, available, status) {
+  if (chartType !== "footprint") return null;
+  if (!available) return "Footprint: 1m to 1h only";
+  if (!status || status.state === "zoom") return "Footprint: zoom in to see it";
+  if (status.state === "price") return "Footprint: price range too wide, zoom in on prices";
+  if (status.state === "on") return "Footprint · $" + status.rowSize + " rows";
+  return null;
+}
+
 // Whichever of the history tail and the live candle is newer — what the
 // legend shows while the crosshair isn't over a bar.
 function latestCandle(history, candle) {
@@ -88,6 +106,8 @@ export default function CandleChart({
   onToolChange,
   indicators,
   indicatorActions,
+  chartType,
+  footprintRows,
 }) {
   const theme = useMemo(readChartTheme, []);
   const wrapperRef = useRef(null);
@@ -97,6 +117,7 @@ export default function CandleChart({
   const drawingsRef = useRef(null);
   const indicatorsRef = useRef(null);
   const serverValuesRef = useRef(null);
+  const footprintRef = useRef(null);
   const lastBarTimeRef = useRef(null);
   const historyLoadedRef = useRef(false);
   const loadingOlderRef = useRef(false);
@@ -105,6 +126,8 @@ export default function CandleChart({
   const [textRequest, setTextRequest] = useState(null);
   const [indicatorValues, setIndicatorValues] = useState(null);
   const [paneTops, setPaneTops] = useState([]);
+  const [footprintStatus, setFootprintStatus] = useState(null);
+  const footprintAvailable = FOOTPRINT_TIMEFRAMES.includes(timeframe);
 
   useEffect(() => {
     const intraday = timeframeSeconds(timeframe) < DAY_SECONDS;
@@ -138,6 +161,7 @@ export default function CandleChart({
       element: wrapperRef.current,
       store: drawingStore,
       theme,
+      symbol,
       barSeconds: timeframeSeconds(timeframe),
       onToolChange,
       onTextRequest: (point, done) => setTextRequest({ x: point.x, y: point.y, done }),
@@ -154,6 +178,10 @@ export default function CandleChart({
       onValues: setIndicatorValues,
       onLayout: setPaneTops,
     });
+
+    const footprint = FOOTPRINT_TIMEFRAMES.includes(timeframe)
+      ? new FootprintManager({ chart, candleSeries, symbol, timeframe, theme, onStatus: setFootprintStatus })
+      : null;
 
     let disposed = false;
 
@@ -198,11 +226,13 @@ export default function CandleChart({
     drawingsRef.current = drawings;
     indicatorsRef.current = indicatorManager;
     serverValuesRef.current = serverValues;
+    footprintRef.current = footprint;
 
     return () => {
       disposed = true;
       drawings.destroy();
       indicatorManager.destroy();
+      footprint?.destroy();
       chart.remove();
     };
   }, [theme, symbol, timeframe, drawingStore, onToolChange]);
@@ -218,6 +248,17 @@ export default function CandleChart({
   useEffect(() => {
     indicatorsRef.current.setIndicators(indicators);
   }, [indicators]);
+
+  const showsFootprint = chartType === "footprint" && footprintAvailable;
+  useEffect(() => {
+    footprintRef.current?.setEnabled(showsFootprint);
+  }, [showsFootprint]);
+
+  useEffect(() => {
+    footprintRef.current?.setRowSize(footprintRows);
+  }, [footprintRows]);
+
+  useLiveFootprint(symbol, showsFootprint, (update) => footprintRef.current?.addLive(update));
 
   const showsServerIndicators = indicators.some((indicator) => serverColumn(indicator.type, indicator.params));
   useLiveIndicators(symbol, timeframe, showsServerIndicators, (update) => {
@@ -268,6 +309,7 @@ export default function CandleChart({
         bar={legendBar}
         indicators={indicatorRows.filter((row) => row.paneIndex === 0)}
         indicatorActions={indicatorActions}
+        note={footprintNote(chartType, footprintAvailable, footprintStatus)}
       />
       {oscillatorPanes.map(
         (pane) =>

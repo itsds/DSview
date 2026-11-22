@@ -5,8 +5,9 @@
  * open/high/low/close, the bar's change, and volume — for the bar under the
  * crosshair, or the latest bar when the crosshair is off the chart — and
  * below that a row per indicator drawn over the candles (see
- * IndicatorLegend.jsx). Purely presentational; CandleChart.jsx decides
- * which bar and which values to show.
+ * IndicatorLegend.jsx), and an optional `note` (what the footprint is
+ * showing). Purely presentational; CandleChart.jsx decides which bar and
+ * which values to show.
  *
  * Author: @DS
  */
@@ -23,7 +24,7 @@ function formatPrice(value) {
   return value.toFixed(PRICE_DECIMALS);
 }
 
-export default function Legend({ symbol, timeframe, bar, indicators, indicatorActions }) {
+export default function Legend({ symbol, timeframe, bar, indicators, indicatorActions, note = null }) {
   return (
     <div className={styles.legend}>
       <div className={styles.main}>
@@ -32,6 +33,7 @@ export default function Legend({ symbol, timeframe, bar, indicators, indicatorAc
         </span>
         {bar && <BarValues bar={bar} />}
       </div>
+      {note && <div className={styles.note}>{note}</div>}
       {indicators.map((row) => (
         <IndicatorLegendRow key={row.id} row={row} actions={indicatorActions} />
       ))}

@@ -3,8 +3,8 @@ spark_session.py
 
 Shared SparkSession builder for everything under streaming/jobs/.
 
-Centralized here so every job (candle_aggregator.py, storage_writer.py,
-indicators.py, and later footprint.py) uses the same local-mode config and
+Centralized here so every job (candle_aggregator.py with its footprint
+query, storage_writer.py, indicators.py) uses the same local-mode config and
 Kafka connector version — a per-job SparkSession.builder call would risk
 drift between jobs (e.g. one resolving a Kafka connector version that
 doesn't match the installed pyspark build).

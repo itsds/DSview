@@ -5,9 +5,15 @@
  * section headings, each with its shortcut, the current one marked.
  * `notBuilt` tools are listed dimmed and inert, as in ToolbarButton.jsx.
  *
- * Portalled to <body> and positioned `fixed` beside the group's button:
- * rendered inside the toolbar, which scrolls (overflow-y: auto), it would
- * be clipped.
+ * Portalled to <body> and positioned `fixed` beside the group's button
+ * (`placement="below"`: under it, for the top bar's menus): rendered
+ * inside the toolbar, which scrolls (overflow-y: auto), it would be
+ * clipped.
+ *
+ * Also the top bar's chart type menu, whose two sections each have their
+ * own current choice: `isChecked(tool)` then says which items are checked
+ * instead of `currentTool` alone. A tool without an icon gets a blank
+ * space in its place, so names still line up.
  *
  * Keyboard, as for any menu button: it opens with focus on the current
  * tool; arrows, Home and End move; Enter or Space picks; Esc or Tab closes
@@ -32,7 +38,16 @@ function menuItems(menu) {
   return [...menu.querySelectorAll("[role='menuitemradio']")];
 }
 
-export default function ToolMenu({ group, anchorRef, currentTool, label, onSelect, onClose }) {
+export default function ToolMenu({
+  group,
+  anchorRef,
+  currentTool,
+  label,
+  onSelect,
+  onClose,
+  placement = "right",
+  isChecked = (tool) => tool.id === currentTool,
+}) {
   const menuRef = useRef(null);
   // The latest onClose, for listeners that are only added once.
   const onCloseRef = useRef(onClose);
@@ -43,11 +58,17 @@ export default function ToolMenu({ group, anchorRef, currentTool, label, onSelec
     const menu = menuRef.current;
     const anchor = anchorRef.current.getBoundingClientRect();
     const lowestTop = window.innerHeight - menu.offsetHeight - MARGIN_PX;
-    menu.style.left = `${anchor.right + GAP_PX}px`;
-    menu.style.top = `${Math.max(MARGIN_PX, Math.min(anchor.top, lowestTop))}px`;
+    if (placement === "below") {
+      const rightmost = window.innerWidth - menu.offsetWidth - MARGIN_PX;
+      menu.style.left = `${Math.max(MARGIN_PX, Math.min(anchor.left, rightmost))}px`;
+      menu.style.top = `${Math.min(anchor.bottom + GAP_PX / 2, lowestTop)}px`;
+    } else {
+      menu.style.left = `${anchor.right + GAP_PX}px`;
+      menu.style.top = `${Math.max(MARGIN_PX, Math.min(anchor.top, lowestTop))}px`;
+    }
     const items = menuItems(menu);
     (items.find((item) => item.dataset.tool === currentTool) ?? items[0])?.focus({ preventScroll: true });
-  }, [anchorRef, currentTool]);
+  }, [anchorRef, currentTool, placement]);
 
   useEffect(() => {
     const close = (options) => onCloseRef.current(options);
@@ -101,7 +122,7 @@ export default function ToolMenu({ group, anchorRef, currentTool, label, onSelec
                 key={tool.id}
                 type="button"
                 role="menuitemradio"
-                aria-checked={tool.id === currentTool}
+                aria-checked={isChecked(tool)}
                 aria-disabled={tool.notBuilt || undefined}
                 tabIndex={-1}
                 data-tool={tool.id}
@@ -109,7 +130,11 @@ export default function ToolMenu({ group, anchorRef, currentTool, label, onSelec
                 title={tool.notBuilt ? `${tool.title} — not built yet` : undefined}
                 onClick={tool.notBuilt ? undefined : () => onSelect(tool.id)}
               >
-                <Icon size={18} strokeWidth={1.75} aria-hidden="true" />
+                {Icon ? (
+                  <Icon size={18} strokeWidth={1.75} aria-hidden="true" />
+                ) : (
+                  <span className={styles.noIcon} aria-hidden="true" />
+                )}
                 <span className={styles.name}>{tool.title}</span>
                 {tool.shortcut && <kbd className={styles.shortcut}>{formatShortcut(tool.shortcut)}</kbd>}
               </button>

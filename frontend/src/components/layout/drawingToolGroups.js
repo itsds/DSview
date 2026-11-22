@@ -99,8 +99,8 @@ export const TOOL_GROUPS = [
         title: "Volume-based",
         tools: [
           { id: "anchored-vwap", title: "Anchored VWAP", icon: Anchor },
-          { id: "fixed-range-volume-profile", title: "Fixed range volume profile", icon: ChartBar, notBuilt: true },
-          { id: "anchored-volume-profile", title: "Anchored volume profile", icon: ChartBarBig, notBuilt: true },
+          { id: "fixed-range-volume-profile", title: "Fixed range volume profile", icon: ChartBar },
+          { id: "anchored-volume-profile", title: "Anchored volume profile", icon: ChartBarBig },
         ],
       },
       {

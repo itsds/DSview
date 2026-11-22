@@ -139,7 +139,7 @@ async def test_a_rerun_fetches_nothing_it_has_and_changes_nothing(run, fake_bina
     assert fake_binance.requests == []
     assert (result.candle_days_fetched, result.candle_days_reloaded) == (0, 3)
     assert (result.trade_days_fetched, result.trade_days_skipped) == (0, 2)
-    assert result.candles_changed == 0
+    assert result.candles_changed == 0 and result.footprint_changed == 0
     assert result.revision is None and revision(pg, symbol) == 1  # nothing to rebuild
 
 
@@ -180,6 +180,68 @@ async def test_the_exchanges_candle_replaces_a_short_live_one(run, fake_binance,
     rows = {row["window_start"]: row for row in stored_candles(pg, symbol)}
     assert rows[utc(minute)]["close"] == Decimal(kline[4]) and rows[utc(minute)]["volume"] == Decimal(kline[5])
     assert result.candles_changed == 1440 + 90 - 1  # everything but the minute live already had right
+
+
+def stored_footprint(pg, symbol):
+    return pg.execute(
+        "SELECT window_start, price, buy_volume, sell_volume FROM footprint_1m WHERE symbol = %s ORDER BY window_start, price",
+        (symbol,),
+    ).fetchall()
+
+
+async def test_each_trade_day_fills_the_footprint_and_every_minute_adds_up_to_its_candle(run, fake_binance, pg, symbol):
+    result = await run(symbol, candle_days=2, trade_days=1)
+
+    rows = stored_footprint(pg, symbol)
+    assert result.footprint_changed == len(rows) > 0
+    by_minute = {}
+    for row in rows:
+        by_minute[row["window_start"]] = by_minute.get(row["window_start"], 0) + row["buy_volume"] + row["sell_volume"]
+    candles = {row["window_start"]: row["volume"] for row in stored_candles(pg, symbol)}
+    # The trade days (DAY + 1 and DAY + 2) have a footprint; the candle-only day doesn't.
+    trade_minutes = {utc(kline[0]) for kline in expected_klines(fake_binance, symbol, DAY + DAY_MS, END) if kline[8] > 0}
+    assert set(by_minute) == trade_minutes
+    for minute, volume in by_minute.items():
+        assert volume == candles[minute]
+    for row in rows:
+        assert row["price"] == row["price"].to_integral_value()  # $1 levels
+
+    # Each level against the fake's own trades.
+    minute = DAY + DAY_MS + 600 * MINUTE_MS
+    expected = {}
+    for trade in fake_binance.market.trades_in_minute(symbol, minute):
+        level = Decimal(trade["p"]) // 1
+        buy, sell = expected.get(level, (Decimal(0), Decimal(0)))
+        quantity = Decimal(trade["q"])
+        expected[level] = (buy, sell + quantity) if trade["m"] else (buy + quantity, sell)
+    got = {row["price"]: (row["buy_volume"], row["sell_volume"]) for row in rows if row["window_start"] == utc(minute)}
+    assert got == expected
+
+
+async def test_a_rerun_leaves_the_footprint_alone_and_live_rows_are_replaced(run, fake_binance, pg, symbol):
+    await run(symbol, candle_days=0, trade_days=1)
+    before = stored_footprint(pg, symbol)
+
+    result = await run(symbol, candle_days=0, trade_days=1)
+    assert result.footprint_changed == 0 and stored_footprint(pg, symbol) == before
+
+    # What live wrote for a closed minute gives way to the exchange's trades:
+    # a short level is corrected, a level the exchange never traded at goes.
+    # Live minutes after the run's end are left alone.
+    minute = utc(DAY + DAY_MS + 30 * MINUTE_MS)
+    level = next(row for row in before if row["window_start"] == minute)
+    pg.execute(
+        "UPDATE footprint_1m SET buy_volume = 0.001 WHERE symbol = %s AND window_start = %s AND price = %s",
+        (symbol, minute, level["price"]),
+    )
+    insert = "INSERT INTO footprint_1m VALUES (%s, %s, %s, 1, 1)"
+    pg.execute(insert, (symbol, minute, Decimal("1")))
+    pg.execute(insert, (symbol, utc(END), Decimal("1")))
+
+    result = await run(symbol, candle_days=0, trade_days=1)
+    assert result.footprint_changed == 2
+    assert [r for r in stored_footprint(pg, symbol) if r["window_start"] < utc(END)] == before
+    assert [r["window_start"] for r in stored_footprint(pg, symbol) if r["window_start"] >= utc(END)] == [utc(END)]
 
 
 async def test_minutes_without_trades_stay_out_of_candles_1m_but_in_bronze(run, fake_binance, pg, symbol, tmp_path):

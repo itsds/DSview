@@ -2,8 +2,9 @@
  * App.jsx
  *
  * Root component — lays out the workspace (top bar, drawing toolbar,
- * chart, right panel, bottom bar), holds the UI state (timeframe, active
- * drawing tool, magnet, indicators and their dialogs), and feeds the chart
+ * chart, right panel, bottom bar), holds the UI state (timeframe, chart
+ * type and footprint rows, active drawing tool, magnet, indicators and
+ * their dialogs), and feeds the chart
  * its data: useCandleHistory.js backfills over REST, useLiveCandles.js
  * streams 1m candles over the WebSocket, and useTimeframeCandle.js rolls
  * that stream up to the selected timeframe; useWhaleTrades.js feeds the
@@ -30,6 +31,7 @@ import TopBar from "./components/layout/TopBar.jsx";
 import { createDrawingStore } from "./drawing/drawingStore.js";
 import { CROSSHAIR_TOOL } from "./drawing/tools.js";
 import { useCandleHistory } from "./hooks/useCandleHistory.js";
+import { useChartSettings } from "./hooks/useChartSettings.js";
 import { useIndicators } from "./hooks/useIndicators.js";
 import { useLiveCandles } from "./hooks/useLiveCandles.js";
 import { useTimeframeCandle } from "./hooks/useTimeframeCandle.js";
@@ -46,6 +48,7 @@ export default function App() {
   const [editingId, setEditingId] = useState(null);
   const drawingStore = useMemo(() => createDrawingStore(SYMBOL), []);
   const indicators = useIndicators();
+  const chartSettings = useChartSettings();
   const history = useCandleHistory(SYMBOL, timeframe);
   const minuteCandle = useLiveCandles(SYMBOL);
   const candle = useTimeframeCandle(SYMBOL, timeframe, minuteCandle);
@@ -74,6 +77,7 @@ export default function App() {
           timeframe={timeframe}
           onTimeframeChange={setTimeframe}
           onIndicatorsClick={() => setPickerOpen(true)}
+          chartSettings={chartSettings}
         />
       </div>
       <div className={styles.tools}>
@@ -99,6 +103,8 @@ export default function App() {
             onToolChange={setActiveTool}
             indicators={indicators.indicators}
             indicatorActions={indicatorActions}
+            chartType={chartSettings.chartType}
+            footprintRows={chartSettings.footprintRows}
           />
         </ErrorBoundary>
       </main>

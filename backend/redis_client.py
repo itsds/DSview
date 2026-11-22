@@ -2,9 +2,9 @@
 redis_client.py
 
 Async Redis boundary for the backend service — the read-side counterpart
-to streaming/redis_sink.py's CandleRedisSink and IndicatorRedisSink. Kept
-as its own module so routers/ws.py and routers/indicators.py never touch
-`redis` directly, mirroring the same producer/consumer-boundary pattern
+to streaming/redis_sink.py's CandleRedisSink, FootprintRedisSink and
+IndicatorRedisSink. Kept as its own module so routers/ws.py,
+routers/indicators.py and routers/footprint.py never touch `redis` directly, mirroring the same producer/consumer-boundary pattern
 used elsewhere in this repo (see ingestion/producer.py).
 
 Author: @DS
@@ -46,6 +46,14 @@ class CandleRedisReader:
     def subscribe_indicator_updates(self, symbol: str, timeframe: str) -> AsyncIterator[str]:
         """Yield each indicators JSON as IndicatorRedisSink publishes it."""
         return self._subscribe(f"indicator_updates:{symbol}:{timeframe}")
+
+    async def get_latest_footprint(self, symbol: str) -> Optional[str]:
+        """The newest minute's cached footprint grid JSON for `symbol`, if any (FootprintRedisSink)."""
+        return await self._client.get(f"footprint:{symbol}:1m")
+
+    def subscribe_footprint_updates(self, symbol: str) -> AsyncIterator[str]:
+        """Yield each minute's footprint grid JSON as FootprintRedisSink publishes it."""
+        return self._subscribe(f"footprint_updates:{symbol}:1m")
 
     async def _subscribe(self, channel: str) -> AsyncIterator[str]:
         pubsub = self._client.pubsub()

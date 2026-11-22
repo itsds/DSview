@@ -2,14 +2,14 @@
 redis_sink.py
 
 Redis serving-layer writers for windowed output: CandleRedisSink for
-candle_aggregator.py's candles, IndicatorRedisSink for jobs/indicators.py's
-indicator values.
+candle_aggregator.py's candles, FootprintRedisSink for its footprint
+levels, IndicatorRedisSink for jobs/indicators.py's indicator values.
 
 Structured Streaming has no built-in Redis sink, so candle_aggregator.py
 drives this through foreachBatch (see its module docstring for why).
 Kept as its own module — rather than inline in candle_aggregator.py — so
 the write logic lives in one place for every job that pushes state
-through the same Redis instance (indicators.py now, footprint.py later).
+through the same Redis instance.
 
 Only the *latest* candle per symbol/timeframe is kept (one key,
 overwritten every batch) — Redis here is real-time serving state, not
@@ -52,6 +52,11 @@ INDICATOR_KEY_TTL_SECONDS = 120
 # or catch-up rewriting history, which charts get over REST, not pushed one
 # bar at a time.
 INDICATOR_PUBLISH_BARS = 3
+# The newest footprint grid per symbol, like the candle key.
+FOOTPRINT_KEY_TTL_SECONDS = 120
+# Each live minute's levels, kept while the minute can still change (it
+# forms for 60 s, then late trades may revise it within the watermark).
+FOOTPRINT_LEVELS_TTL_SECONDS = 180
 
 
 def _json_default(value: Any) -> str:
@@ -84,6 +89,71 @@ class CandleRedisSink:
 
         self._client.set(f"candle:{symbol}:{self._timeframe}", value, ex=self._ttl_seconds)
         self._client.publish(f"candle_updates:{symbol}:{self._timeframe}", value)
+
+
+def plain_decimal(value: Decimal) -> str:
+    """A decimal as plain digits without trailing zeros: 97000, 0.25 (never 9.7E+4)."""
+    text = format(value.normalize(), "f")
+    return "0" if text in ("-0", "") else text
+
+
+class FootprintRedisSink:
+    """
+    Writes the live footprint for serving, a minute's whole grid at a time.
+
+    Update mode hands a batch only the levels it changed, but a client
+    needs a minute's every level. So each live minute's levels collect in a
+    hash, `footprint_levels:{symbol}:1m:{window start, Unix seconds}`
+    (field: the level's price, value: "buy sell"), and every minute a batch
+    touched is sent out whole, read back from its hash in the same
+    pipeline:
+
+      - PUBLISH `footprint_updates:{symbol}:1m` for clients already
+        connected (backend/routers/footprint.py);
+      - SET `footprint:{symbol}:1m` (TTL'd) with the newest minute's grid,
+        for clients that connect mid-minute. A batch that only revises an
+        older minute (a late trade) leaves it alone.
+
+    Each message: {"symbol", "window_start" (ISO 8601, UTC), "levels":
+    [[price, buy_volume, sell_volume], ...]}, prices ascending, every
+    number a plain decimal string ("97000", "1.25"). A whole grid rather
+    than the changed levels, so a message never depends on the ones
+    before it: a client replaces that minute's grid with it.
+    """
+
+    def __init__(self, host: str = REDIS_HOST, port: int = REDIS_PORT) -> None:
+        self._client = redis.Redis(host=host, port=port, decode_responses=True)
+        self._newest = {}  # symbol -> newest window_start cached under footprint:{symbol}:1m
+
+    def write_rows(self, rows: Iterable[Mapping[str, Any]]) -> None:
+        """Rows of symbol, window_start (aware UTC), price, buy_volume and sell_volume (Decimals), any order."""
+        windows = defaultdict(dict)
+        for row in rows:
+            levels = windows[(row["symbol"], row["window_start"])]
+            levels[plain_decimal(row["price"])] = f"{plain_decimal(row['buy_volume'])} {plain_decimal(row['sell_volume'])}"
+        if not windows:
+            return
+
+        order = sorted(windows, key=lambda key: key[1])  # oldest first: live clients never see time go back
+        pipe = self._client.pipeline(transaction=False)
+        for symbol, window_start in order:
+            key = f"footprint_levels:{symbol}:1m:{int(window_start.timestamp())}"
+            pipe.hset(key, mapping=windows[(symbol, window_start)])
+            pipe.expire(key, FOOTPRINT_LEVELS_TTL_SECONDS)
+            pipe.hgetall(key)
+        grids = pipe.execute()[2::3]
+
+        pipe = self._client.pipeline(transaction=False)
+        for (symbol, window_start), grid in zip(order, grids):
+            levels = sorted(
+                ([price, *value.split(" ")] for price, value in grid.items()), key=lambda level: Decimal(level[0])
+            )
+            message = json.dumps({"symbol": symbol, "window_start": window_start.isoformat(), "levels": levels})
+            pipe.publish(f"footprint_updates:{symbol}:1m", message)
+            if self._newest.get(symbol) is None or window_start >= self._newest[symbol]:
+                self._newest[symbol] = window_start
+                pipe.set(f"footprint:{symbol}:1m", message, ex=FOOTPRINT_KEY_TTL_SECONDS)
+        pipe.execute()
 
 
 class IndicatorRedisSink:

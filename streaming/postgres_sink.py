@@ -2,8 +2,9 @@
 postgres_sink.py
 
 Postgres serving-layer writers: CandlePostgresSink for the Gold-tier
-OHLCV candles produced by candle_aggregator.py, IndicatorPostgresSink for
-the indicators jobs/indicators.py computes — plus read_minute_closes(),
+OHLCV candles produced by candle_aggregator.py, FootprintPostgresSink for
+the footprint levels its footprint query produces, IndicatorPostgresSink
+for the indicators jobs/indicators.py computes — plus read_minute_closes(),
 which that job warms its indicator state up from, and
 read_candle_revision(), which tells it when a backfill changed that
 history. The one place streaming/ touches psycopg.
@@ -60,6 +61,41 @@ class CandlePostgresSink:
     def write_candle(self, candle: Mapping[str, Any]) -> None:
         """Upsert one candle row, keyed on (symbol, window_start)."""
         self._conn.execute(_UPSERT_SQL, dict(candle))
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+_FOOTPRINT_UPSERT_SQL = """
+    INSERT INTO footprint_1m (symbol, window_start, price, buy_volume, sell_volume)
+    VALUES (%(symbol)s, %(window_start)s, %(price)s, %(buy_volume)s, %(sell_volume)s)
+    ON CONFLICT (symbol, window_start, price) DO UPDATE SET
+        buy_volume = EXCLUDED.buy_volume,
+        sell_volume = EXCLUDED.sell_volume
+"""
+
+
+class FootprintPostgresSink:
+    """
+    Upserts footprint levels into footprint_1m (storage/ddl/footprint.sql),
+    a micro-batch at a time.
+
+    Update mode sends each level a batch changed with its window's running
+    totals, so the upsert replaces both volumes, and repeated upserts
+    converge on the minute's final values, as CandlePostgresSink's do. One
+    transaction per batch, so a reader never sees half a batch's levels.
+    """
+
+    def __init__(self, dsn: str = POSTGRES_DSN) -> None:
+        self._conn = psycopg.connect(dsn, autocommit=True)
+
+    def write_rows(self, rows: Iterable[Mapping[str, Any]]) -> None:
+        """Upsert rows of symbol, window_start (aware UTC), price, buy_volume and sell_volume."""
+        rows = list(rows)
+        if not rows:
+            return
+        with self._conn.transaction(), self._conn.cursor() as cursor:
+            cursor.executemany(_FOOTPRINT_UPSERT_SQL, rows)
 
     def close(self) -> None:
         self._conn.close()
