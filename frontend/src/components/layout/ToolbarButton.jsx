@@ -11,14 +11,14 @@
  *
  * `pressed` is for toggles (a timeframe, a drawing tool); leave it
  * undefined on plain action buttons so screen readers don't announce them
- * as toggles.
+ * as toggles. Any other prop (aria-haspopup, say) goes on the <button>.
  *
  * Author: @DS
  */
 
 import styles from "./ToolbarButton.module.css";
 
-export default function ToolbarButton({ icon: Icon, label, title, pressed, notBuilt = false, onClick }) {
+export default function ToolbarButton({ icon: Icon, label, title, pressed, notBuilt = false, onClick, ...rest }) {
   const tooltip = notBuilt ? `${title} — not built yet` : title;
   const className = [styles.button, !label && styles.iconOnly, pressed && styles.pressed]
     .filter(Boolean)
@@ -33,6 +33,7 @@ export default function ToolbarButton({ icon: Icon, label, title, pressed, notBu
       aria-pressed={pressed}
       aria-disabled={notBuilt || undefined}
       onClick={notBuilt ? undefined : onClick}
+      {...rest}
     >
       {Icon && <Icon size={18} strokeWidth={1.75} aria-hidden="true" />}
       {label && <span>{label}</span>}

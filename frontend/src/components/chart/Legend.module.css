@@ -44,3 +44,8 @@
 .down {
   color: var(--color-down);
 }
+
+.note {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
