@@ -69,17 +69,19 @@ then confirmed on the laptop for what only the laptop has.
 | 1 | Finish whale tracking; make everything trustworthy | M | Done |
 | 2 | Technical indicators in Spark | L | Done |
 | 3a | History backfill | M | Done |
-| 3b | Volume footprint | L | In progress |
-| 4 | Replay, backtest, long/short ratio | L | Not started |
+| 3b | Volume footprint | L | Done |
+| 4a | Replay | L | Next (kickoff done) |
+| 4b | Backtest | M | Not started |
+| 4c | Long/short ratio | M | Not started |
 | 5 | More markets | L | Not started |
 | 6 | Production readiness | L | Not started |
 | 7 | Stretch and future | XL | Not started |
 
 CLAUDE.md roadmap items map to phases as: item 1 (whale tracking) → 1,
 item 2 (indicators) → 2, item 3 (footprint) → 3a and 3b, item 4 (backtest, replay,
-long/short) → 4, items 5–6 (order book, AI layer) → 7. The diagram's
+long/short) → 4a, 4b and 4c, items 5–6 (order book, AI layer) → 7. The diagram's
 "step 4" backfill lands in Phase 3a, because the footprint needs history to
-show anything useful; its replay and backtest nodes land in Phase 4.
+show anything useful; its replay and backtest nodes land in Phases 4a and 4b.
 
 ## Phase 0 — prerequisites (owner)
 
@@ -311,17 +313,140 @@ with live Binance, where real trades crowd many more onto each level.
 
 ## Phase 4 — replay, backtest, long/short ratio
 
-- [ ] Replay mode: feeds Bronze history back through the live pipeline at a
-      controlled speed.
-- [ ] Backtest framework over the stored history.
-- [ ] Binance Futures adapter and the long/short ratio in the UI (spot data
-      doesn't carry it).
+Split at kickoff into 4a (replay), 4b (backtest) and 4c (long/short ratio),
+each its own branch, pull request and laptop check, as Phase 3 was. None
+depends on another; they run in the feature roadmap's order.
 
-**Kickoff decisions:** how replayed data is kept apart from live data.
+**Kickoff decisions** (made 2026-11-22):
 
-**Done when:** replaying a recorded day reproduces the candles stored from
-it live; a sample strategy backtests over stored history; the long/short
-ratio shows live.
+1. **Replay runs in a namespace of its own.** The same jobs, started with
+   one setting, get their own Kafka topics (`replay.market.trades.raw`, …),
+   Postgres schema (`replay`), Redis key prefix (`replay:`), Parquet root,
+   checkpoints and consumer groups. The names stay in `config/settings.py`,
+   derived from the pipeline's name, so a producer and its consumers still
+   can't disagree. Live is never touched, and the Telegram bot only ever
+   reads the live topic. One replay at a time; starting one clears the last.
+
+   Checked at kickoff: replaying into the live topic can't work at all. A
+   query's watermark is one value for every symbol it reads, so once live
+   trades have moved it to "now", every replayed trade is dropped as late,
+   with no error. On Spark 3.5.9 with the repo's own `build_candles()`, 240
+   trades from the day before made no candles, under the live symbol and
+   under a renamed one alike, and Spark counted them as dropped by the
+   watermark. They would also land in Bronze a second time.
+2. **Replay is driven from the chart.** A Replay button in the top bar:
+   pick the start bar and a speed (1×, 10×, 100×, or as fast as Spark keeps
+   up), then play, pause or stop. While it runs the chart shows the
+   replay's data, then returns to live. Updates arrive once per Spark batch,
+   as live ones do.
+3. **Backtests: strategies in Python, results on the chart.** A strategy is
+   a Python class with `on_bar()`, run from the command line over the lake's
+   history: Bronze's `klines_1m` (a year, from the exchange) for candles,
+   with EMAs from Spark's own `IndicatorEngine` so a strategy sees the
+   values the chart shows, and `agg_trades` for strategies that read the
+   footprint. Fills at the next bar's open, 0.1% fee per side (Binance
+   spot's base taker fee). Each run's trades and equity curve go to
+   Postgres; the chart marks the trades, and a results panel shows the
+   curve and the stats. Sample strategy: EMA 20/50 crossover, long and
+   short.
+4. **Long/short: all four of Binance Futures' ratios**, each in its own
+   pane under the chart, like RSI: global accounts
+   (`globalLongShortAccountRatio`), top traders' positions
+   (`topLongShortPositionRatio`), top traders' accounts
+   (`topLongShortAccountRatio`) and taker buy/sell volume
+   (`takerlongshortRatio`), for the USDⓈ-M perpetual of the same name
+   (BTCUSDT). They are REST endpoints with 5-minute periods at the finest,
+   and Binance keeps only the latest 30 days: the backfill fetches those,
+   and the poller keeps everything after, so DSView's history outgrows
+   Binance's.
+
+**Choices made at kickoff** (inside the decisions; easy to change):
+
+- **Replay's source:** Bronze's live `trades` for days the laptop recorded,
+  `agg_trades` (the backfilled 30 days) for the rest, picked per run.
+  Replayed aggTrades make Binance's own klines, so either source has an
+  exact reference to check against.
+- **Replay's jobs run only during a replay:** the candle aggregator (with
+  its footprint query) and the indicator job start with a replay and stop
+  with it, so nothing holds a JVM between replays. The whale detector runs
+  in the namespace too, so replayed whales reach the right panel, never
+  Telegram.
+- **Replay's indicators start from the history before the start bar:** the
+  `replay` schema's `candles_1m` is seeded from live's before the first
+  trade, so EMA 200 on 1D has its 200 days, as it did live.
+- **Backtests:** one position at a time, $10,000 starting capital, all of
+  it in each trade. Run the backfill first to bring `klines_1m` up to date.
+- **Long/short pipeline:** a Futures poller in `ingestion/` (a REST poll at
+  each 5-minute close, so not a `BaseExchangeClient`, as the diagram
+  anticipated) → a `market.futures.ratios` topic through
+  `MarketDataProducer` → a plain Python consumer (no windowing, so no
+  Spark, like the whale detector) → Postgres and Redis → the backend → the
+  chart.
+
+### Phase 4a — replay
+
+- [ ] Pipeline namespaces: one setting in `config/settings.py` from which
+      every topic, Redis prefix, Postgres schema, Parquet root, checkpoint
+      and consumer group follows; `init_db.py` creates the `replay` schema
+      from the same DDL.
+- [ ] Replay service: reads a span of Bronze (`trades` or `agg_trades`) in
+      event-time order and produces it to the replay namespace's trades
+      topic through `MarketDataProducer` on a scaled clock, with pause,
+      resume, speed and stop; seeds the replay schema's history; starts and
+      stops the replay namespace's jobs.
+- [ ] Backend: start and control a replay, and serve every live route for
+      the replay namespace too.
+- [ ] Frontend: the Replay button and its controls in the top bar; the
+      chart, indicators, footprint and whale panel switch to the replay's
+      data and back.
+- [ ] `docs/architecture.html`: the replay node feeds the replay
+      namespace's own topic, not `market.trades.raw` as drawn today.
+
+**Done when:** replaying a recorded day reproduces Gold's candles for it
+(what the live stream finalized from the same trades; `candles_1m` won't
+do, since a backfill replaces live minutes with the exchange's) on every
+full minute, exactly; replaying a backfilled day reproduces Binance's
+klines; live runs untouched throughout; the chart plays, pauses and stops
+a replay.
+
+### Phase 4b — backtest
+
+- [ ] Backtest engine (`backtest/`): reads the lake's history, rolls it up
+      into the chart's timeframes, steps a strategy bar by bar with
+      `IndicatorEngine`'s EMAs, fills at the next bar's open with fees.
+- [ ] Sample strategy: EMA 20/50 crossover, long and short.
+- [ ] Results: each run's trades, equity curve and stats in Postgres, served
+      by the backend.
+- [ ] Frontend: trade markers on the chart and a results panel (equity
+      curve, net profit, win rate, max drawdown, profit factor, the trade
+      list).
+
+**Done when:** the sample strategy backtests over a year of stored
+history; the EMAs it trades on equal Spark's on every bar; a rerun gives
+the same result; the trades show on the chart.
+
+### Phase 4c — long/short ratio
+
+- [ ] Futures poller and the `market.futures.ratios` topic.
+- [ ] Consumer: Postgres (a ratios table) and Redis.
+- [ ] Backfill: the latest 30 days of all four ratios.
+- [ ] Backend: REST history and live push.
+- [ ] Frontend: four indicators, each in its own pane.
+- [ ] `tests/fake_binance.py`: the four Futures endpoints.
+
+**Done when:** all four ratios show live and on 30 days of history; a
+restarted poller fills in the periods it missed (inside Binance's 30
+days).
+
+Confirmed at kickoff from Binance's docs (through a search, since the docs
+site is blocked in the cloud container): each endpoint takes `symbol`,
+`period` (5m to 1d), `limit` (default 30, max 500) and `startTime`/
+`endTime`; only the latest 30 days are kept; since August 2026
+`globalLongShortAccountRatio` and `topLongShortPositionRatio` take an
+optional `contractType`, and without it return all contract types
+combined. Left for the build: the exact request weights and rate limit
+(one page states 1000 requests per 5 minutes per IP), and whether to pass
+`contractType=PERPETUAL`.
 
 ## Phase 5 — more markets
 
