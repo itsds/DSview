@@ -23,6 +23,10 @@
 # run as the window's command, so a crashed service leaves its window open
 # with the traceback visible and the command one up-arrow away.
 #
+# The replay window is the replay service (Phase 4a): idle until the chart's
+# Replay button starts a replay, when it starts the replay's own Spark jobs
+# (their logs go to storage/data/replay/_logs/, not a window).
+#
 # Each window loads the repo root's .env first, if there is one: that's
 # where the Telegram bot's token and chat id live (gitignored; copy
 # .env.example). Without them the telegram window just says what's missing.
@@ -48,6 +52,7 @@ SERVICES=(
   "candles|streaming|python -m jobs.candle_aggregator"
   "indicators|streaming|python -m jobs.indicators"
   "storage|streaming|python -m jobs.storage_writer"
+  "replay|replay|python replay_service.py"
   "backend|backend|uvicorn main:app --reload --port 8000"
   "frontend|frontend|npm run dev"
 )
