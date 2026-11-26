@@ -296,7 +296,7 @@
           <dt>Grain</dt><dd>One row per trade, exactly as parsed; the backfill's, one per kline or aggregate trade, every column Binance gives</dd>
           <dt>Write</dt><dd>Append, every micro-batch; the backfill replaces a whole symbol-day file at a time, and never writes into the live dataset (its readers list files from Spark's own log)</dd>
           <dt>Promise</dt><dd>Immutable and replayable — the only place a trade survives in full. aggTrades are a different id series from live trades: never sum the two</dd>
-          <dt>Read by</dt><dd>The footprint's history (<code>agg_trades</code> → <code>footprint_1m</code>); <code>candles_1m</code> reloads from <code>klines_1m</code>; replay and backtests <span class="badge planned">roadmap</span></dd>
+          <dt>Read by</dt><dd>The footprint's history (<code>agg_trades</code> → <code>footprint_1m</code>); <code>candles_1m</code> reloads from <code>klines_1m</code>; replay (<code>trades</code> through Spark's log, or <code>agg_trades</code>); backtests <span class="badge planned">roadmap</span></dd>
         </dl>
       </div>
       <div class="layer" style="--edge:#868e96">
@@ -447,6 +447,10 @@ const NODES = [
   { id: "t_depth", parent: "f_bus", kind: "pill", color: C.bus, status: "built", flows: ["depth"],
     title: "market.depth.raw", lines: ["nothing consumes it yet"],
     what: "Order-book snapshots have been flowing since day one and no job reads them. It is the cheapest head start the stretch goal could have." },
+  { id: "t_replay", parent: "f_bus", kind: "pill", color: C.bus, status: "built", tag: "step 4", flows: ["medallion"],
+    title: "replay.* topics", lines: ["the replay pipeline's own copies", "truncated before every run"],
+    code: "config/settings.py (Pipeline)",
+    what: "Phase 4a. A replay can't share market.trades.raw: a Spark query's watermark is one value for every symbol it reads, so behind live trades every replayed one would be dropped as late. So the replay pipeline has its own topics (replay.market.trades.raw, …), Postgres schema, Redis prefix and Parquet root, and runs live's jobs, unchanged, against them." },
   { id: "t_candles", parent: "f_bus", kind: "pill", color: C.bus, status: "built", flows: ["hot"],
     title: "market.candles.1m", lines: ["every candle update · key = symbol"],
     code: "streaming/candle_topic.py",
@@ -553,6 +557,10 @@ NODES.push(
     title: "GET /footprint/{symbol} + WS", lines: ["bars: ?timeframe=1m…1h&row_size=", "/profile: any range, ~24 rows", "WS: the live minute's grid"],
     code: "backend/routers/footprint.py · backend/postgres_client.py",
     what: "Same split as candles, for the same reason: history and profiles from Postgres, merged into the asked-for rows and bars in SQL; the live minute from Redis, which the client rolls up itself." },
+  { id: "r_replay", parent: "f_api", kind: "box", color: C.api, status: "built", tag: "step 4", flows: ["hot","medallion"],
+    title: "/replay · ?pipeline=replay", lines: ["start · pause · speed · stop", "every route: live's data or the replay's"],
+    code: "backend/routers/replay.py · backend/routers/pipelines.py",
+    what: "Phase 4a. The chart's Replay button: commands queued on a Redis list for the replay service, its status read back from a key it rewrites every second. Every data route above takes ?pipeline=replay to serve the replay's schema, keys and topics instead of live's." },
 
   { id: "f_hooks", col: "client", lane: "hot", kind: "frame", color: C.client, status: "built", flows: ["hot"],
     title: "React hooks", lines: ["Vite dev server :5173"],
@@ -638,10 +646,10 @@ NODES.push(
     title: "Bronze", lines: ["bronze/trades/ (live)", "bronze/klines_1m/, agg_trades/ (backfill)", "raw Parquet, by symbol"],
     code: "storage/data/bronze/",
     what: "Immutable landing zone and the replay source. Every later layer can be rebuilt from it, which is the whole point of keeping it." },
-  { id: "j_replay", col: "store", lane: "medallion", dx: 0, w: 230, kind: "box", color: C.bronze, status: "planned", tag: "step 4", flows: ["medallion"],
-    title: "Replay mode", lines: ["re-publish Bronze at chosen speed"],
-    code: "scripts/replay_historical.py (planned)",
-    what: "Feeds history back through the live pipeline instead of building a second one — the same Spark jobs, sinks and chart, just a faster clock." },
+  { id: "j_replay", col: "store", lane: "medallion", dx: 0, w: 230, kind: "box", color: C.bronze, status: "built", tag: "step 4", flows: ["medallion"],
+    title: "Replay service", lines: ["Bronze at 1x–1000x or max", "its own copy of live's jobs"],
+    code: "replay/replay_service.py",
+    what: "Phase 4a. Clears the replay pipeline, seeds it with live's history before the chosen bar, starts live's jobs as the replay pipeline, then re-publishes Bronze's trades on a scaled clock: pause, resume and speed apply at once. The chart's Replay button drives it through the backend and two Redis keys." },
   { id: "l_silver", col: "store", lane: "medallion", dx: 265, w: 230, kind: "box", color: C.silver, status: "built", flows: ["medallion"],
     title: "Silver", lines: ["silver/trades/", "one row per trade_id", "deduped inside a 10 s watermark"],
     code: "storage/data/silver/trades/",
@@ -846,10 +854,12 @@ const EDGES = [
     label: "medallion step: dedupe", badge: "GE", what: "Nothing on disk — the layers are branches of one stream", how: "logical step, checked by Great Expectations later", when: "—" },
   { from: "l_silver", to: "l_gold", group: "medallion", status: "built", kind: "derive", flows: ["medallion"],
     label: "medallion step: windows", badge: "GE", what: "Again logical: Gold re-reads Kafka rather than Silver's files", how: "logical step, checked by Great Expectations later", when: "—" },
-  { from: "l_bronze", to: "j_replay", group: "medallion", status: "planned", flows: ["medallion"],
-    label: "read in event-time order", what: "Raw trades, oldest first", how: "Parquet read", when: "when replaying" },
-  { from: "j_replay", to: "t_trades", group: "medallion", status: "planned", flows: ["medallion"], route: "corridor", track: 0,
-    label: "re-publish at chosen speed", what: "The same trades, on a faster clock", how: "Kafka produce", when: "during a replay run" },
+  { from: "l_bronze", to: "j_replay", group: "medallion", status: "built", flows: ["medallion"],
+    label: "read in event-time order", what: "Raw trades, oldest first: the live recording's committed files (Spark's log), or the backfill's aggTrades", how: "Parquet read (pyarrow)", when: "when replaying" },
+  { from: "r_replay", to: "j_replay", group: "medallion", status: "built", flows: ["medallion"],
+    label: "commands", what: "start, pause, resume, speed, stop; the service's status back", how: "Redis list + key", when: "per click on the replay bar" },
+  { from: "j_replay", to: "t_replay", group: "medallion", status: "built", flows: ["medallion"], route: "corridor", track: 0,
+    label: "re-publish at chosen speed", what: "The same trades, on the replay's own clock, into the replay pipeline's topic", how: "Kafka produce (MarketDataProducer.send_batch)", when: "during a replay run" },
   { from: "l_silver", to: "j_backtest", group: "medallion", status: "planned", flows: ["medallion"], route: "downCorridor", track: 4, what: "Deduped trades", how: "Parquet read", when: "per backtest" },
   { from: "l_gold", to: "j_backtest", group: "medallion", status: "planned", flows: ["medallion"], label: "candles", what: "Finalized candles", how: "Parquet read", when: "per backtest" },
   { from: "l_gold", to: "j_sync", group: "medallion", status: "suggested", flows: ["medallion","hot"],
@@ -989,6 +999,7 @@ N.x_registry.y = N.x_console.y + N.x_console.h + 12;
 N.t_trades.y = (LANE.hot.top + LANE.alerts.bottom) / 2 - N.t_trades.h / 2;
 N.t_depth.y = (LANE.depth.top + LANE.depth.bottom) / 2 - N.t_depth.h / 2;
 N.t_candles.y = mid(N.q_indicators) - N.t_candles.h / 2;
+N.t_replay.y = N.t_trades.y + N.t_trades.h + 16;
 
 place(N.p_producer, COL.publish.x, 0, COL.publish.w);
 place(N.p_schema, COL.publish.x, 0, COL.publish.w);

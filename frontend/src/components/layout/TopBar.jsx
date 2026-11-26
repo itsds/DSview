@@ -3,21 +3,22 @@
  *
  * Symbol, timeframes, chart type, indicators, and chart actions along the
  * top of the workspace. The symbol label, timeframe buttons, chart type
- * (candles or the volume footprint, ChartTypeButton.jsx) and Indicators
- * are real; everything else renders as `notBuilt` until its feature exists
- * (see ToolbarButton.jsx).
+ * (candles or the volume footprint, ChartTypeButton.jsx), Indicators and
+ * Replay (pick a bar, then watch history play from it: App.jsx and
+ * components/replay/) are real; everything else renders as `notBuilt`
+ * until its feature exists (see ToolbarButton.jsx).
  *
  * Author: @DS
  */
 
-import { Camera, Maximize, Redo2, Settings, SquareFunction, Undo2 } from "lucide-react";
+import { Camera, Maximize, Redo2, Rewind, Settings, SquareFunction, Undo2 } from "lucide-react";
 
 import { TIMEFRAMES } from "../../lib/timeframes.js";
 import ChartTypeButton from "./ChartTypeButton.jsx";
 import styles from "./TopBar.module.css";
 import ToolbarButton, { ToolbarDivider } from "./ToolbarButton.jsx";
 
-export default function TopBar({ symbol, timeframe, onTimeframeChange, onIndicatorsClick, chartSettings }) {
+export default function TopBar({ symbol, timeframe, onTimeframeChange, onIndicatorsClick, chartSettings, replay }) {
   return (
     <header className={styles.bar}>
       <span className={styles.brand}>
@@ -46,6 +47,18 @@ export default function TopBar({ symbol, timeframe, onTimeframeChange, onIndicat
         onFootprintRowsChange={chartSettings.setFootprintRows}
       />
       <ToolbarButton icon={SquareFunction} label="Indicators" title="Indicators" onClick={onIndicatorsClick} />
+      <ToolbarButton
+        icon={Rewind}
+        label="Replay"
+        title={
+          replay.available
+            ? "Replay: click a bar, then watch history play forward from it"
+            : "Replay: the replay service isn't running (scripts/dev.sh starts it in its 'replay' window)"
+        }
+        pressed={replay.active || replay.picking}
+        unavailable={!replay.available}
+        onClick={replay.onClick}
+      />
       <div className={styles.spacer} />
       <ToolbarButton icon={Undo2} title="Undo" notBuilt />
       <ToolbarButton icon={Redo2} title="Redo" notBuilt />

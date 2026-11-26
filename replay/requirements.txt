@@ -1,0 +1,7 @@
+# replay/ sends through ingestion's MarketDataProducer (pydantic, aiokafka).
+-r ../ingestion/requirements.txt
+redis>=5.0,<6.0
+psycopg[binary]>=3.1,<4.0
+# Bronze's Parquet files. The same range streaming/requirements.txt pins for Spark.
+pyarrow>=14,<20
+# Its jobs are streaming/'s, run as the replay pipeline: install streaming/requirements.txt too.

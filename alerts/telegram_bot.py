@@ -53,9 +53,9 @@ from aiokafka.errors import KafkaError
 
 from config.settings import (
     KAFKA_BOOTSTRAP_SERVERS,
+    LIVE_PIPELINE,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
-    WHALE_ALERTS_TOPIC,
 )
 
 from telegram_client import TelegramClient, TelegramConfigError, TelegramUnreachable
@@ -69,6 +69,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 CONSUMER_GROUP_ID = "dsview-telegram-bot"
+# Live's whales, whatever DSVIEW_PIPELINE says: a replayed whale never reaches
+# the phone (Phase 4a's kickoff decision 1).
+WHALE_ALERTS_TOPIC = LIVE_PIPELINE.whale_alerts_topic
 SEEN_KEYS_KEPT = 10_000
 SHUTDOWN_TIMEOUT_SECONDS = 5.0
 # Longest a poll waits with no group open; a new alert ends it at once.

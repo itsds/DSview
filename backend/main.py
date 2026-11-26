@@ -7,8 +7,12 @@ endpoint (routers/candles.py, reading Postgres's candles_1m with each
 candle's indicators from candle_indicators), the WebSocket live-indicator
 push (routers/indicators.py, from Redis), the volume footprint
 (routers/footprint.py: history and profiles from Postgres's footprint_1m,
-the live minute from Redis) and the WebSocket whale-alert feed
-(routers/whales.py, from Kafka's alerts.whales).
+the live minute from Redis), the WebSocket whale-alert feed
+(routers/whales.py, from Kafka's alerts.whales) and the replay's controls
+(routers/replay.py, handed to replay/replay_service.py through Redis).
+
+Every data route serves the live pipeline by default and the replay's with
+`?pipeline=replay` (routers/pipelines.py, Phase 4a).
 
 Run from backend/ (matching ingestion/streaming's flat-import
 convention), with the repo root on PYTHONPATH (see config/settings.py):
@@ -28,6 +32,7 @@ from config.settings import CORS_ALLOWED_ORIGINS
 from routers.candles import router as candles_router
 from routers.footprint import router as footprint_router
 from routers.indicators import router as indicators_router
+from routers.replay import router as replay_router
 from routers.whales import router as whales_router
 from routers.ws import router as ws_router
 
@@ -40,7 +45,7 @@ app = FastAPI(title="DSView Backend")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],  # POST: the replay's controls (routers/replay.py)
     allow_headers=["*"],
 )
 
@@ -49,6 +54,7 @@ app.include_router(candles_router)
 app.include_router(indicators_router)
 app.include_router(footprint_router)
 app.include_router(whales_router)
+app.include_router(replay_router)
 
 
 @app.get("/health")

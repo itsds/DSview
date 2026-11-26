@@ -23,6 +23,11 @@ pub/sub" row of CLAUDE.md's architecture table:
   - a PUBLISH (`candle_updates:{symbol}:{timeframe}`) so already-connected
     clients (backend/routers/ws.py) get pushed each update as it happens.
 
+Every key and channel starts with the pipeline's Redis prefix (none for
+live, `replay:` for replay; config/settings.py's Pipeline), so a replay's
+jobs never overwrite live's state. The keys named in these docstrings are
+live's.
+
 Author: @DS
 """
 
@@ -30,14 +35,14 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from collections import defaultdict
 from typing import Any, Iterable, List, Mapping
 
 import redis
 
-from config.settings import REDIS_HOST, REDIS_PORT
+from config.settings import REDIS_HOST, REDIS_PORT, REDIS_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -77,18 +82,20 @@ class CandleRedisSink:
         port: int = REDIS_PORT,
         timeframe: str = "1m",
         ttl_seconds: int = CANDLE_KEY_TTL_SECONDS,
+        prefix: str = REDIS_PREFIX,
     ) -> None:
         self._client = redis.Redis(host=host, port=port, decode_responses=True)
         self._timeframe = timeframe
         self._ttl_seconds = ttl_seconds
+        self._prefix = prefix
 
     def write_candle(self, candle: Mapping[str, Any]) -> None:
         """Cache this candle's current fields and publish the update for live subscribers."""
         symbol = candle["symbol"]
         value = json.dumps(dict(candle), default=_json_default)
 
-        self._client.set(f"candle:{symbol}:{self._timeframe}", value, ex=self._ttl_seconds)
-        self._client.publish(f"candle_updates:{symbol}:{self._timeframe}", value)
+        self._client.set(f"{self._prefix}candle:{symbol}:{self._timeframe}", value, ex=self._ttl_seconds)
+        self._client.publish(f"{self._prefix}candle_updates:{symbol}:{self._timeframe}", value)
 
 
 def plain_decimal(value: Decimal) -> str:
@@ -121,8 +128,9 @@ class FootprintRedisSink:
     before it: a client replaces that minute's grid with it.
     """
 
-    def __init__(self, host: str = REDIS_HOST, port: int = REDIS_PORT) -> None:
+    def __init__(self, host: str = REDIS_HOST, port: int = REDIS_PORT, prefix: str = REDIS_PREFIX) -> None:
         self._client = redis.Redis(host=host, port=port, decode_responses=True)
+        self._prefix = prefix
         self._newest = {}  # symbol -> newest window_start cached under footprint:{symbol}:1m
 
     def write_rows(self, rows: Iterable[Mapping[str, Any]]) -> None:
@@ -137,7 +145,7 @@ class FootprintRedisSink:
         order = sorted(windows, key=lambda key: key[1])  # oldest first: live clients never see time go back
         pipe = self._client.pipeline(transaction=False)
         for symbol, window_start in order:
-            key = f"footprint_levels:{symbol}:1m:{int(window_start.timestamp())}"
+            key = f"{self._prefix}footprint_levels:{symbol}:1m:{int(window_start.timestamp())}"
             pipe.hset(key, mapping=windows[(symbol, window_start)])
             pipe.expire(key, FOOTPRINT_LEVELS_TTL_SECONDS)
             pipe.hgetall(key)
@@ -149,10 +157,10 @@ class FootprintRedisSink:
                 ([price, *value.split(" ")] for price, value in grid.items()), key=lambda level: Decimal(level[0])
             )
             message = json.dumps({"symbol": symbol, "window_start": window_start.isoformat(), "levels": levels})
-            pipe.publish(f"footprint_updates:{symbol}:1m", message)
+            pipe.publish(f"{self._prefix}footprint_updates:{symbol}:1m", message)
             if self._newest.get(symbol) is None or window_start >= self._newest[symbol]:
                 self._newest[symbol] = window_start
-                pipe.set(f"footprint:{symbol}:1m", message, ex=FOOTPRINT_KEY_TTL_SECONDS)
+                pipe.set(f"{self._prefix}footprint:{symbol}:1m", message, ex=FOOTPRINT_KEY_TTL_SECONDS)
         pipe.execute()
 
 
@@ -170,10 +178,15 @@ class IndicatorRedisSink:
     """
 
     def __init__(
-        self, host: str = REDIS_HOST, port: int = REDIS_PORT, ttl_seconds: int = INDICATOR_KEY_TTL_SECONDS
+        self,
+        host: str = REDIS_HOST,
+        port: int = REDIS_PORT,
+        ttl_seconds: int = INDICATOR_KEY_TTL_SECONDS,
+        prefix: str = REDIS_PREFIX,
     ) -> None:
         self._client = redis.Redis(host=host, port=port, decode_responses=True)
         self._ttl_seconds = ttl_seconds
+        self._prefix = prefix
 
     def write_rows(self, rows: Iterable[Mapping[str, Any]], columns: List[str]) -> None:
         """`rows` (symbol, timeframe, window_start and `columns`) oldest first within each symbol and timeframe."""
@@ -193,6 +206,19 @@ class IndicatorRedisSink:
                     },
                     default=_json_default,
                 )
-                pipe.publish(f"indicator_updates:{symbol}:{timeframe}", value)
-            pipe.set(f"indicators:{symbol}:{timeframe}", value, ex=self._ttl_seconds)
+                pipe.publish(f"{self._prefix}indicator_updates:{symbol}:{timeframe}", value)
+            pipe.set(f"{self._prefix}indicators:{symbol}:{timeframe}", value, ex=self._ttl_seconds)
         pipe.execute()
+
+
+def announce_ready(job: str, host: str = REDIS_HOST, port: int = REDIS_PORT, prefix: str = REDIS_PREFIX) -> None:
+    """
+    SET `{prefix}ready:{job}` (TTL-less, the current time): this job's
+    queries are running. replay/ waits for its jobs' keys before it starts a
+    run's clock, so the first replayed minutes aren't played while Spark is
+    still starting; clearing the replay pipeline's keys before the next run
+    clears these too. Live jobs don't call it.
+    """
+    redis.Redis(host=host, port=port, decode_responses=True).set(
+        f"{prefix}ready:{job}", datetime.now(timezone.utc).isoformat()
+    )

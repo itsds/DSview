@@ -19,18 +19,21 @@
 import { useEffect, useState } from "react";
 
 import { BACKEND_WS_URL } from "../config.js";
+import { LIVE_FEED, withPipeline } from "../lib/pipelines.js";
 import { openReconnectingSocket } from "../lib/reconnectingSocket.js";
 
-export function useLiveCandles(symbol) {
-  const [candle, setCandle] = useState(null);
+export function useLiveCandles(symbol, feed = LIVE_FEED) {
+  const key = `${symbol}|${feed.key}`;
+  const [latest, setLatest] = useState({ key: null, candle: null });
 
-  useEffect(
-    () =>
-      openReconnectingSocket(`${BACKEND_WS_URL}/ws/candles/${symbol}`, {
-        onMessage: (data) => setCandle(JSON.parse(data)),
-      }),
-    [symbol],
-  );
+  useEffect(() => {
+    const params = withPipeline(new URLSearchParams(), feed.pipeline);
+    const query = params.toString() ? `?${params}` : "";
+    return openReconnectingSocket(`${BACKEND_WS_URL}/ws/candles/${symbol}${query}`, {
+      onMessage: (data) => setLatest({ key, candle: JSON.parse(data) }),
+    });
+  }, [key]);
 
-  return candle;
+  // Never the last feed's candle: a switch to or from a replay starts with none.
+  return latest.key === key ? latest.candle : null;
 }

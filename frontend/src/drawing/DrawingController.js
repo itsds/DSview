@@ -42,7 +42,7 @@ export class DrawingController {
    * `element` must contain the chart and share its top-left corner, so
    * mouse positions measured from it are price-pane coordinates.
    */
-  constructor({ chart, series, volumeSeries, element, store, theme, symbol, barSeconds, onToolChange, onTextRequest }) {
+  constructor({ chart, series, volumeSeries, element, store, theme, symbol, pipeline, barSeconds, onToolChange, onTextRequest }) {
     this._chart = chart;
     this._series = series;
     this._element = element;
@@ -62,7 +62,7 @@ export class DrawingController {
       coords: this._coords,
       bars: createBarData(chart, series, volumeSeries),
       // The volume profile tools' data; a profile landing redraws them.
-      profiles: createProfileData({ symbol, onLoad: () => this._layer.requestUpdate() }),
+      profiles: createProfileData({ symbol, pipeline, onLoad: () => this._layer.requestUpdate() }),
       getState: () => this._renderState(),
     });
     series.attachPrimitive(this._layer);

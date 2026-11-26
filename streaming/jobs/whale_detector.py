@@ -63,6 +63,7 @@ from aiokafka import AIOKafkaConsumer
 
 from config.settings import (
     KAFKA_BOOTSTRAP_SERVERS,
+    PIPELINE,
     TRADES_TOPIC,
     WHALE_ALERTS_TOPIC,
     WHALE_THRESHOLD_USD,
@@ -76,7 +77,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CONSUMER_GROUP_ID = "dsview-whale-detector"
+# Live's group; another pipeline's detector uses its own (replay.dsview-whale-detector).
+CONSUMER_GROUP_ID = PIPELINE.consumer_group("dsview-whale-detector")
 ALERT_EVENT_TYPE = "whale_trade"
 
 # Per client (consumer, then publisher). With the broker up each closes in
@@ -117,7 +119,8 @@ class WhaleDetector:
             bootstrap_servers=self._bootstrap_servers,
             group_id=self._group_id,
             value_deserializer=lambda v: v,  # decode raw bytes ourselves in _handle_message
-            auto_offset_reset="latest",
+            # With no committed offset: live from now on, replay from the run's start.
+            auto_offset_reset=PIPELINE.starting_offsets,
         )
         await self._consumer.start()
         logger.info(

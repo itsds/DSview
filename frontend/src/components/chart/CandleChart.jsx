@@ -28,8 +28,14 @@
  * chart type, told the row size setting and every live minute from
  * useLiveFootprint.js; the legend says what it's showing.
  *
- * Mounted once per symbol + timeframe (App.jsx keys it), so a switch gets
- * a fresh chart and fresh refs instead of resetting them by hand.
+ * Mounted once per symbol + timeframe + feed (App.jsx keys it), so a
+ * switch gets a fresh chart and fresh refs instead of resetting them by
+ * hand. `pipeline` is whose data every fetch and live socket asks for:
+ * live's, or a replay's (lib/pipelines.js, Phase 4a).
+ *
+ * With `onPickReplayStart` set, the chart is choosing where a replay starts:
+ * the next click on a bar hands that bar's time to it (App.jsx then starts
+ * the replay), with a note over the chart saying so.
  *
  * Colours come from chartTheme.js (i.e. styles/theme.css); the
  * O/H/L/C readout is Legend.jsx, fed by the crosshair.
@@ -46,6 +52,7 @@ import { FootprintManager } from "../../footprint/FootprintManager.js";
 import { FOOTPRINT_TIMEFRAMES } from "../../footprint/levels.js";
 import { useLiveFootprint } from "../../hooks/useLiveFootprint.js";
 import { useLiveIndicators } from "../../hooks/useLiveIndicators.js";
+import { LIVE } from "../../lib/pipelines.js";
 import { IndicatorManager } from "../../indicators/IndicatorManager.js";
 import { legendRowsAt } from "../../indicators/legend.js";
 import { createServerIndicatorStore, serverColumn } from "../../indicators/server.js";
@@ -108,9 +115,12 @@ export default function CandleChart({
   indicatorActions,
   chartType,
   footprintRows,
+  pipeline = LIVE,
+  onPickReplayStart = null,
 }) {
   const theme = useMemo(readChartTheme, []);
   const wrapperRef = useRef(null);
+  const chartRef = useRef(null);
   const containerRef = useRef(null);
   const candleSeriesRef = useRef(null);
   const volumeSeriesRef = useRef(null);
@@ -162,6 +172,7 @@ export default function CandleChart({
       store: drawingStore,
       theme,
       symbol,
+      pipeline,
       barSeconds: timeframeSeconds(timeframe),
       onToolChange,
       onTextRequest: (point, done) => setTextRequest({ x: point.x, y: point.y, done }),
@@ -180,7 +191,7 @@ export default function CandleChart({
     });
 
     const footprint = FOOTPRINT_TIMEFRAMES.includes(timeframe)
-      ? new FootprintManager({ chart, candleSeries, symbol, timeframe, theme, onStatus: setFootprintStatus })
+      ? new FootprintManager({ chart, candleSeries, symbol, timeframe, theme, pipeline, onStatus: setFootprintStatus })
       : null;
 
     let disposed = false;
@@ -200,7 +211,7 @@ export default function CandleChart({
       if (loaded.length === 0) return;
       loadingOlderRef.current = true;
       try {
-        const older = await fetchCandles(symbol, { timeframe, before: loaded[0].time });
+        const older = await fetchCandles(symbol, { timeframe, before: loaded[0].time, pipeline });
         if (disposed) return;
         if (older.length < HISTORY_PAGE_SIZE) reachedStartRef.current = true;
         const first = candleSeries.data()[0].time;
@@ -221,6 +232,7 @@ export default function CandleChart({
       if (range && range.from < LOAD_OLDER_WITHIN_BARS) loadOlder();
     });
 
+    chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
     drawingsRef.current = drawings;
@@ -235,7 +247,7 @@ export default function CandleChart({
       footprint?.destroy();
       chart.remove();
     };
-  }, [theme, symbol, timeframe, drawingStore, onToolChange]);
+  }, [theme, symbol, timeframe, drawingStore, onToolChange, pipeline]);
 
   useEffect(() => {
     drawingsRef.current.setTool(activeTool);
@@ -258,15 +270,32 @@ export default function CandleChart({
     footprintRef.current?.setRowSize(footprintRows);
   }, [footprintRows]);
 
-  useLiveFootprint(symbol, showsFootprint, (update) => footprintRef.current?.addLive(update));
+  useLiveFootprint(symbol, showsFootprint, (update) => footprintRef.current?.addLive(update), pipeline);
+
+  // Choosing a replay's start: the next click on a bar.
+  useEffect(() => {
+    if (!onPickReplayStart) return undefined;
+    const chart = chartRef.current;
+    const onClick = (param) => {
+      if (param.time !== undefined) onPickReplayStart(param.time);
+    };
+    chart.subscribeClick(onClick);
+    return () => chart.unsubscribeClick(onClick);
+  }, [onPickReplayStart]);
 
   const showsServerIndicators = indicators.some((indicator) => serverColumn(indicator.type, indicator.params));
-  useLiveIndicators(symbol, timeframe, showsServerIndicators, (update) => {
-    serverValuesRef.current.addLive(update);
-    // A revision of an older bar changes a point mid-line, which update() can't.
-    const last = lastBarTimeRef.current;
-    indicatorsRef.current.refresh({ full: last !== null && update.time < last });
-  });
+  useLiveIndicators(
+    symbol,
+    timeframe,
+    showsServerIndicators,
+    (update) => {
+      serverValuesRef.current.addLive(update);
+      // A revision of an older bar changes a point mid-line, which update() can't.
+      const last = lastBarTimeRef.current;
+      indicatorsRef.current.refresh({ full: last !== null && update.time < last });
+    },
+    pipeline,
+  );
 
   useEffect(() => {
     if (history.length === 0) return;
@@ -301,8 +330,13 @@ export default function CandleChart({
   const oscillatorPanes = [...new Set(indicatorRows.map((row) => row.paneIndex))].filter((pane) => pane > 0);
 
   return (
-    <div ref={wrapperRef} className={styles.wrapper}>
+    <div ref={wrapperRef} className={onPickReplayStart ? `${styles.wrapper} ${styles.picking}` : styles.wrapper}>
       <div ref={containerRef} className={styles.chart} />
+      {onPickReplayStart && (
+        <div className={styles.pickNote} role="status">
+          Click the bar to replay from · Esc to cancel
+        </div>
+      )}
       <Legend
         symbol={symbol}
         timeframe={timeframe}

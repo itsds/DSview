@@ -9,6 +9,10 @@
  * truly disabled button gets no mouse events, so some browsers never show
  * its tooltip.
  *
+ * `unavailable` is the same for a built feature that can't be used right
+ * now (the replay, while its service isn't running): dimmed and inert,
+ * with `title` saying why.
+ *
  * `pressed` is for toggles (a timeframe, a drawing tool); leave it
  * undefined on plain action buttons so screen readers don't announce them
  * as toggles. Any other prop (aria-haspopup, say) goes on the <button>.
@@ -18,8 +22,18 @@
 
 import styles from "./ToolbarButton.module.css";
 
-export default function ToolbarButton({ icon: Icon, label, title, pressed, notBuilt = false, onClick, ...rest }) {
+export default function ToolbarButton({
+  icon: Icon,
+  label,
+  title,
+  pressed,
+  notBuilt = false,
+  unavailable = false,
+  onClick,
+  ...rest
+}) {
   const tooltip = notBuilt ? `${title} — not built yet` : title;
+  const inert = notBuilt || unavailable;
   const className = [styles.button, !label && styles.iconOnly, pressed && styles.pressed]
     .filter(Boolean)
     .join(" ");
@@ -31,8 +45,8 @@ export default function ToolbarButton({ icon: Icon, label, title, pressed, notBu
       title={tooltip}
       aria-label={label ? undefined : tooltip}
       aria-pressed={pressed}
-      aria-disabled={notBuilt || undefined}
-      onClick={notBuilt ? undefined : onClick}
+      aria-disabled={inert || undefined}
+      onClick={inert ? undefined : onClick}
       {...rest}
     >
       {Icon && <Icon size={18} strokeWidth={1.75} aria-hidden="true" />}

@@ -44,7 +44,7 @@ from aiokafka.errors import TopicAlreadyExistsError
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from config.settings import CANDLES_TOPIC, KAFKA_BOOTSTRAP_SERVERS
+from config.settings import CANDLES_TOPIC, KAFKA_BOOTSTRAP_SERVERS, PIPELINE
 
 from schemas import CANDLE_SCHEMA
 from trades_source import DECIMAL_TYPE
@@ -128,14 +128,15 @@ def ensure_candles_topic() -> None:
 
 def read_candles_stream(spark: SparkSession) -> DataFrame:
     """
-    Stream market.candles.1m from its end (a query restarted from a
-    checkpoint resumes where it stopped instead), parsed by parse_candles().
+    Stream this pipeline's market.candles.1m, parsed by parse_candles(): live
+    from its end, replay from the start of the run (Pipeline.starting_offsets;
+    a query restarted from a checkpoint resumes where it stopped instead).
     """
     raw = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
         .option("subscribe", CANDLES_TOPIC)
-        .option("startingOffsets", "latest")
+        .option("startingOffsets", PIPELINE.starting_offsets)
         .load()
     )
     return parse_candles(raw)

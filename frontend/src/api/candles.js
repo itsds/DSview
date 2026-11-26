@@ -10,6 +10,7 @@
  */
 
 import { BACKEND_HTTP_URL } from "../config.js";
+import { withPipeline } from "../lib/pipelines.js";
 
 // Candles per request. A page shorter than this means history has run out.
 export const HISTORY_PAGE_SIZE = 300;
@@ -17,9 +18,10 @@ export const HISTORY_PAGE_SIZE = 300;
 /**
  * Fetch candles for `symbol` at `timeframe`, oldest first. `before` (Unix
  * seconds) pages backwards: only candles starting before it are returned.
+ * `pipeline`: whose candles (lib/pipelines.js), live's by default.
  */
-export async function fetchCandles(symbol, { timeframe, limit = HISTORY_PAGE_SIZE, before } = {}) {
-  const params = new URLSearchParams({ timeframe, limit: String(limit) });
+export async function fetchCandles(symbol, { timeframe, limit = HISTORY_PAGE_SIZE, before, pipeline } = {}) {
+  const params = withPipeline(new URLSearchParams({ timeframe, limit: String(limit) }), pipeline);
   if (before !== undefined) params.set("before", new Date(before * 1000).toISOString());
 
   const response = await fetch(`${BACKEND_HTTP_URL}/candles/${encodeURIComponent(symbol)}?${params}`);

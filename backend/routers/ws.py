@@ -23,6 +23,7 @@ import logging
 from fastapi import APIRouter, WebSocket, status
 
 from redis_client import CandleRedisReader
+from routers.pipelines import PipelineName, pipeline_query, resolve
 from routers.push import push_until_disconnect
 
 logger = logging.getLogger(__name__)
@@ -35,10 +36,10 @@ DEFAULT_TIMEFRAME = "1m"
 
 
 @router.websocket("/ws/candles/{symbol}")
-async def candle_updates(websocket: WebSocket, symbol: str) -> None:
-    """Push the live-updating candle for `symbol` until the client disconnects."""
+async def candle_updates(websocket: WebSocket, symbol: str, pipeline: PipelineName = pipeline_query()) -> None:
+    """Push the live-updating candle for `symbol` (in `pipeline`) until the client disconnects."""
     await websocket.accept()
-    reader = CandleRedisReader()
+    reader = CandleRedisReader(prefix=resolve(pipeline).redis_prefix)
     try:
         # Cancelling the push loop unsubscribes (subscribe_updates' finally).
         error = await push_until_disconnect(websocket, _push_candles(websocket, reader, symbol))

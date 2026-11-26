@@ -67,7 +67,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-from config.settings import BINANCE_REST_URL, DATA_ROOT, SYMBOLS
+from config.settings import BINANCE_REST_URL, DATA_ROOT, PIPELINE, SYMBOLS
 
 from binance_rest import WEIGHT_BUDGET_PER_MINUTE, BinanceError, BinanceHistoryClient, WeightBudget
 from bronze_files import AGG_TRADES, KLINES, covers, day_path, day_writer, page_table
@@ -317,6 +317,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if not PIPELINE.is_live:
+        # The exchange's history is live's; a replay seeds its own from it (replay/).
+        parser.error(f"the backfill fills the live pipeline only (DSVIEW_PIPELINE is {PIPELINE.name!r})")
 
     symbols = [s.upper() for s in (args.symbols or SYMBOLS)]
     if args.rebuild_indicators_only:

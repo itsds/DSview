@@ -26,6 +26,7 @@ import logging
 from fastapi import APIRouter, Query, WebSocket, status
 
 from kafka_client import WhaleAlertReader
+from routers.pipelines import PipelineName, pipeline_query, resolve
 from routers.push import push_until_disconnect
 
 logger = logging.getLogger(__name__)
@@ -40,11 +41,12 @@ MAX_BACKLOG = 500
 async def whale_alerts(
     websocket: WebSocket,
     backlog: int = Query(DEFAULT_BACKLOG, ge=0, le=MAX_BACKLOG),
+    pipeline: PipelineName = pipeline_query(),
 ) -> None:
     """Push the latest `backlog` whale alerts, then live ones, until the client disconnects."""
     await websocket.accept()
     # Cancelling the push loop closes its Kafka consumer (the reader's finally).
-    error = await push_until_disconnect(websocket, _forward_alerts(websocket, backlog))
+    error = await push_until_disconnect(websocket, _forward_alerts(websocket, backlog, resolve(pipeline).whale_alerts_topic))
     if error is None:
         logger.info("Client disconnected from whale alerts")
         return
@@ -57,7 +59,7 @@ async def whale_alerts(
     await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="whale alerts unavailable")
 
 
-async def _forward_alerts(websocket: WebSocket, backlog: int) -> None:
-    async for alert in WhaleAlertReader().stream(backlog):
+async def _forward_alerts(websocket: WebSocket, backlog: int, topic: str) -> None:
+    async for alert in WhaleAlertReader(topic=topic).stream(backlog):
         await websocket.send_text(alert)
 

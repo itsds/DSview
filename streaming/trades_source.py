@@ -15,7 +15,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import DecimalType
 
-from config.settings import KAFKA_BOOTSTRAP_SERVERS, TRADES_TOPIC
+from config.settings import KAFKA_BOOTSTRAP_SERVERS, PIPELINE, TRADES_TOPIC
 
 from schemas import TRADE_EVENT_SCHEMA
 
@@ -25,12 +25,19 @@ DECIMAL_TYPE = DecimalType(38, 18)
 
 
 def read_trades_stream(spark: SparkSession) -> DataFrame:
-    """Read market.trades.raw, parse its JSON, and cast to typed columns."""
+    """
+    Read this pipeline's trades topic (market.trades.raw, live), parse its
+    JSON, and cast to typed columns.
+
+    A query with no checkpoint starts where the pipeline says
+    (Pipeline.starting_offsets): live at the end, replay at the start of
+    the run.
+    """
     raw = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
         .option("subscribe", TRADES_TOPIC)
-        .option("startingOffsets", "latest")
+        .option("startingOffsets", PIPELINE.starting_offsets)
         .load()
     )
 

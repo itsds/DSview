@@ -57,6 +57,7 @@ from config.settings import FOOTPRINT_PRICE_STEP, FOOTPRINT_TIMEFRAMES, TIMEFRAM
 
 from postgres_client import FootprintReader
 from redis_client import CandleRedisReader
+from routers.pipelines import PipelineName, pipeline_query, resolve
 from routers.push import push_until_disconnect
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,7 @@ def get_footprint(
     end: datetime | None = None,
     timeframe: str = "1m",
     row_size: str = str(FOOTPRINT_PRICE_STEP),
+    pipeline: PipelineName = pipeline_query(),
 ) -> list[dict]:
     """The footprint of `symbol`'s `timeframe` bars from `start` to `end`, in rows of `row_size`."""
     if timeframe not in FOOTPRINT_TIMEFRAMES:
@@ -126,7 +128,7 @@ def get_footprint(
     if (end - start) / bar > MAX_BARS:
         raise HTTPException(status_code=422, detail=f"at most {MAX_BARS} bars per request")
 
-    reader = FootprintReader()
+    reader = FootprintReader(dsn=resolve(pipeline).postgres_dsn)
     try:
         return reader.get_bars(symbol, timeframe, start, end, size)
     finally:
@@ -140,11 +142,12 @@ def get_profile(
     end: datetime | None = None,
     rows: int = Query(DEFAULT_PROFILE_ROWS, ge=1, le=MAX_PROFILE_ROWS),
     row_size: str | None = None,
+    pipeline: PipelineName = pipeline_query(),
 ) -> dict:
     """The volume profile of `symbol` over [start, end): about `rows` rows, or rows `row_size` wide."""
     size = _row_size(row_size)
     start, end = _range(start, end)
-    reader = FootprintReader()
+    reader = FootprintReader(dsn=resolve(pipeline).postgres_dsn)
     try:
         profile = reader.get_profile(symbol, start, end, size, rows)
     finally:
@@ -153,10 +156,10 @@ def get_profile(
 
 
 @router.websocket("/ws/footprint/{symbol}")
-async def footprint_updates(websocket: WebSocket, symbol: str) -> None:
+async def footprint_updates(websocket: WebSocket, symbol: str, pipeline: PipelineName = pipeline_query()) -> None:
     """Push `symbol`'s live footprint, a minute's whole grid at a time, until the client disconnects."""
     await websocket.accept()
-    reader = CandleRedisReader()
+    reader = CandleRedisReader(prefix=resolve(pipeline).redis_prefix)
     try:
         error = await push_until_disconnect(websocket, _push_footprint(websocket, reader, symbol))
     finally:

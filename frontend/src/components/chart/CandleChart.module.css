@@ -10,3 +10,24 @@
   position: absolute;
   inset: 0;
 }
+
+/* Choosing where a replay starts: a crosshair cursor, and a note on top. */
+.picking .chart {
+  cursor: crosshair;
+}
+
+.pickNote {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 5px 12px;
+  border-radius: var(--radius-control);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: 12px;
+  font-weight: 600;
+  pointer-events: none; /* the click goes to the chart */
+  white-space: nowrap;
+}
