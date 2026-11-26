@@ -1,8 +1,10 @@
 /**
  * BottomBar.jsx
  *
- * Range presets and price-scale toggles along the bottom of the chart
- * (not built yet), plus a UTC clock. UTC because lightweight-charts plots
+ * The Strategy Tester's toggle (Phase 4b: the backtest results panel opens
+ * under the chart, components/backtest/StrategyTester.jsx), range presets
+ * and price-scale toggles along the bottom of the chart (not built yet),
+ * plus a UTC clock. UTC because lightweight-charts plots
  * every timestamp in UTC — the clock matches the chart's time axis until
  * timezone selection exists.
  *
@@ -12,6 +14,8 @@
 import { useEffect, useState } from "react";
 
 import styles from "./BottomBar.module.css";
+import { FlaskConical } from "lucide-react";
+
 import ToolbarButton, { ToolbarDivider } from "./ToolbarButton.jsx";
 
 const RANGES = ["1D", "5D", "1M"];
@@ -25,11 +29,19 @@ function useNow() {
   return now;
 }
 
-export default function BottomBar() {
+export default function BottomBar({ testerOpen, onTesterToggle }) {
   const now = useNow();
 
   return (
     <footer className={styles.bar}>
+      <ToolbarButton
+        icon={FlaskConical}
+        label="Strategy Tester"
+        title="Backtest results"
+        pressed={testerOpen}
+        onClick={onTesterToggle}
+      />
+      <ToolbarDivider />
       {RANGES.map((range) => (
         <ToolbarButton key={range} label={range} title={`Zoom to ${range}`} notBuilt />
       ))}
