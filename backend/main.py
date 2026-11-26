@@ -8,8 +8,9 @@ candle's indicators from candle_indicators), the WebSocket live-indicator
 push (routers/indicators.py, from Redis), the volume footprint
 (routers/footprint.py: history and profiles from Postgres's footprint_1m,
 the live minute from Redis), the WebSocket whale-alert feed
-(routers/whales.py, from Kafka's alerts.whales) and the replay's controls
-(routers/replay.py, handed to replay/replay_service.py through Redis).
+(routers/whales.py, from Kafka's alerts.whales), the replay's controls
+(routers/replay.py, handed to replay/replay_service.py through Redis) and
+the backtest results (routers/backtests.py, from Postgres; live only).
 
 Every data route serves the live pipeline by default and the replay's with
 `?pipeline=replay` (routers/pipelines.py, Phase 4a).
@@ -29,6 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config.settings import CORS_ALLOWED_ORIGINS
 
+from routers.backtests import router as backtests_router
 from routers.candles import router as candles_router
 from routers.footprint import router as footprint_router
 from routers.indicators import router as indicators_router
@@ -55,6 +57,7 @@ app.include_router(indicators_router)
 app.include_router(footprint_router)
 app.include_router(whales_router)
 app.include_router(replay_router)
+app.include_router(backtests_router)
 
 
 @app.get("/health")
