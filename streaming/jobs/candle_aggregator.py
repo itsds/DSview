@@ -47,6 +47,8 @@ from __future__ import annotations
 
 from datetime import timezone
 
+from config.settings import PIPELINE
+
 from candle_topic import publish_candles
 from candle_windowing import build_candles
 from footprint_windowing import build_footprint
@@ -55,6 +57,11 @@ from readiness import announce_when_running
 from redis_sink import CandleRedisSink, FootprintRedisSink
 from spark_session import get_spark_session
 from trades_source import read_trades_stream
+
+# How often both queries write. A replay runs its own copy of this job
+# (DSVIEW_PIPELINE=replay) at up to 1000x real time, where 5 s would be
+# minutes of replayed bars per batch and the chart would move in jumps.
+TRIGGER_INTERVAL = "5 seconds" if PIPELINE.is_live else "1 second"
 
 
 def _row_to_candle(row) -> dict:
@@ -93,7 +100,7 @@ def build_candle_query(
     return (
         candles.writeStream.outputMode("update")
         .foreachBatch(_write_batch)
-        .trigger(processingTime="5 seconds")
+        .trigger(processingTime=TRIGGER_INTERVAL)
         .start()
     )
 
@@ -124,7 +131,7 @@ def build_footprint_query(
     return (
         levels.writeStream.outputMode("update")
         .foreachBatch(_write_batch)
-        .trigger(processingTime="5 seconds")
+        .trigger(processingTime=TRIGGER_INTERVAL)
         .start()
     )
 
