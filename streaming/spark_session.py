@@ -19,6 +19,8 @@ import sys
 
 from pyspark.sql import SparkSession
 
+from config.settings import PIPELINE
+
 # Must track the installed pyspark version (see streaming/requirements.txt).
 # spark-sql-kafka-0-10 isn't bundled with pyspark; a version mismatch here
 # fails at runtime with a confusing NoClassDefFoundError/UnsatisfiedLinkError
@@ -50,6 +52,8 @@ def get_spark_session(app_name: str) -> SparkSession:
       the venv, so pandas and pyspark would be missing there.
     """
     os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+    if not PIPELINE.is_live:
+        app_name = f"{app_name}-{PIPELINE.name}"  # tells a replay's JVMs apart from live's
     spark = (
         SparkSession.builder.appName(app_name)
         .master("local[*]")

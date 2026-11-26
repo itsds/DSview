@@ -48,6 +48,7 @@ from candle_topic import ensure_candles_topic, read_candles_stream
 from indicator_engine import INDICATOR_COLUMNS
 from indicator_state import compute_indicators
 from postgres_sink import IndicatorPostgresSink, read_candle_revision, read_minute_closes
+from readiness import announce_when_running
 from redis_sink import IndicatorRedisSink
 from spark_session import get_spark_session
 
@@ -115,6 +116,7 @@ def main(checkpoint_location: Optional[str] = None) -> None:
     postgres_sink = IndicatorPostgresSink()
     query = build_indicator_query(spark, redis_sink, postgres_sink, checkpoint_location or DEFAULT_CHECKPOINT)
     try:
+        announce_when_running([query], "indicators")  # replay/ waits for it; a no-op on live
         query.awaitTermination()
     except KeyboardInterrupt:
         pass

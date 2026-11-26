@@ -51,6 +51,7 @@ from candle_topic import publish_candles
 from candle_windowing import build_candles
 from footprint_windowing import build_footprint
 from postgres_sink import CandlePostgresSink, FootprintPostgresSink
+from readiness import announce_when_running
 from redis_sink import CandleRedisSink, FootprintRedisSink
 from spark_session import get_spark_session
 from trades_source import read_trades_stream
@@ -138,6 +139,7 @@ def main() -> None:
         build_footprint_query(spark, FootprintRedisSink(), footprint_postgres_sink),
     ]
     try:
+        announce_when_running(queries, "candle-aggregator")  # replay/ waits for it; a no-op on live
         spark.streams.awaitAnyTermination()
     except KeyboardInterrupt:
         pass
