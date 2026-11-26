@@ -12,7 +12,7 @@ from decimal import Decimal
 
 import pytest
 
-from config.settings import POSTGRES_DSN, SERVER_EMA_LENGTHS
+from config.settings import POSTGRES_DSN, REPLAY_PIPELINE, SERVER_EMA_LENGTHS
 
 import run_backtest
 from backtest_stats import compute_stats
@@ -117,6 +117,12 @@ def test_start_and_end_bound_the_bars_traded(lake, symbol, pg):
     assert stored["first_bar"] == datetime.fromtimestamp(start / 1000, timezone.utc)
     assert stored["last_bar"] == datetime.fromtimestamp(end / 1000 - 4 * 3600, timezone.utc)  # the last bar ending by `end`
     assert stored["stats"]["bars"] == 5 * 6
+
+
+def test_without_its_tables_it_says_to_run_init_db(lake, symbol, capsys):
+    # The replay's schema has every table but the backtests' (init_db.py's LIVE_ONLY).
+    assert run_backtest.main(["--strategy", "ema_cross", "--symbol", symbol], data_root=str(lake), dsn=REPLAY_PIPELINE.postgres_dsn) == 2
+    assert "run `python storage/init_db.py`" in capsys.readouterr().err
 
 
 def test_without_history_it_says_to_run_the_backfill(tmp_path, symbol, capsys):

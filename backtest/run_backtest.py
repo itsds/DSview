@@ -49,7 +49,7 @@ from typing import Dict, List, Optional  # noqa: E402
 from config.settings import LIVE_PIPELINE, SYMBOLS, TIMEFRAMES  # noqa: E402
 
 from backtest_stats import compute_stats  # noqa: E402
-from backtest_store import BacktestStore, result_digest  # noqa: E402
+from backtest_store import BacktestStore, MissingTables, result_digest  # noqa: E402
 from backtester import run  # noqa: E402
 from bar_series import TIMEFRAME_SECONDS, build_bars, with_footprints  # noqa: E402
 from broker import DEFAULT_CAPITAL, DEFAULT_FEE_RATE  # noqa: E402
@@ -95,6 +95,19 @@ def main(argv: Optional[List[str]] = None, data_root: str = LIVE_PIPELINE.data_r
         parser.error(str(error))
     timeframe = args.timeframe or cls.default_timeframe
 
+    try:  # Postgres first: a missing table should cost no wait
+        store = None if args.no_save and args.no_check else BacktestStore(dsn)
+    except MissingTables as error:
+        print(error, file=sys.stderr)
+        return 2
+    try:
+        return _backtest(args, strategy, timeframe, store, data_root)
+    finally:
+        if store is not None:
+            store.close()
+
+
+def _backtest(args, strategy, timeframe: str, store: Optional[BacktestStore], data_root: str) -> int:
     began = time.monotonic()
     try:
         minutes = read_minutes(data_root, args.symbol)
@@ -121,17 +134,12 @@ def main(argv: Optional[List[str]] = None, data_root: str = LIVE_PIPELINE.data_r
     _print_stats(strategy, stats)
 
     check = None
-    store = None if args.no_save and args.no_check else BacktestStore(dsn)
-    try:
-        if not args.no_check:
-            check = compare_emas(result.bars, store.spark_emas(args.symbol, timeframe, result.bars[0].time, result.bars[-1].time))
-            _print_check(check)
-        if not args.no_save:
-            run_id, same = store.save(args.symbol, cls.name, strategy.params, timeframe, result, stats, check, result_digest(result))
-            print(f"stored as run {run_id}" + (f": the same result as run {same}" if same else ""))
-    finally:
-        if store is not None:
-            store.close()
+    if not args.no_check:
+        check = compare_emas(result.bars, store.spark_emas(args.symbol, timeframe, result.bars[0].time, result.bars[-1].time))
+        _print_check(check)
+    if not args.no_save:
+        run_id, same = store.save(args.symbol, strategy.name, strategy.params, timeframe, result, stats, check, result_digest(result))
+        print(f"stored as run {run_id}" + (f": the same result as run {same}" if same else ""))
     return 1 if check is not None and check["differ"] else 0
 
 
