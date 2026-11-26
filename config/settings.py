@@ -42,10 +42,12 @@ Author: @DS
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Dict, List, Tuple
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -79,14 +81,23 @@ KAFKA_BOOTSTRAP_SERVERS: str = _env("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 REDIS_HOST: str = _env("REDIS_HOST", "localhost")
 REDIS_PORT: int = int(_env("REDIS_PORT", "6379"))
 
-# Local-dev credentials from docker-compose.yml — never reuse them anywhere
-# real; set DSVIEW_POSTGRES_DSN instead.
-POSTGRES_DSN: str = _env("POSTGRES_DSN", "postgresql://dsview:dsview@localhost:5432/dsview")
+# Which pipeline this process belongs to: "live" (the default, fed from
+# Binance by ingestion/) or "replay" (fed from Bronze's history by replay/,
+# Phase 4a). Everything a pipeline owns follows from its name, so the same
+# jobs run in either one without touching the other's data: see Pipeline
+# below. DSVIEW_PIPELINE=replay
+PIPELINE_NAME: str = _env("PIPELINE", "live")
 
-# Root of the Bronze/Silver/Gold Parquet layers (gitignored). Absolute, so
-# it no longer depends on which folder a job is started from.
-# DSVIEW_DATA_ROOT
-DATA_ROOT: str = _env("DATA_ROOT", str(REPO_ROOT / "storage" / "data"))
+# Local-dev credentials from docker-compose.yml — never reuse them anywhere
+# real; set DSVIEW_POSTGRES_DSN instead. The database every pipeline keeps
+# its schema in: use POSTGRES_DSN (below), which is this pipeline's.
+_DATABASE_DSN: str = _env("POSTGRES_DSN", "postgresql://dsview:dsview@localhost:5432/dsview")
+
+# Root of the Bronze/Silver/Gold Parquet layers (gitignored), the live
+# pipeline's; another pipeline's are under it, in a folder of its name.
+# Absolute, so it doesn't depend on which folder a job is started from. Use
+# DATA_ROOT (below), which is this pipeline's. DSVIEW_DATA_ROOT
+_LAKE_ROOT: str = _env("DATA_ROOT", str(REPO_ROOT / "storage" / "data"))
 
 # Notional (price x quantity, in the quote currency) at or above which
 # streaming/jobs/whale_detector.py flags a trade. DSVIEW_WHALE_THRESHOLD_USD
@@ -115,20 +126,152 @@ BINANCE_REST_URL: str = _env("BINANCE_REST_URL", "https://api.binance.com")
 
 # --- Pipeline contract (not overridable) -------------------------------------
 
-# ingestion/schema.py's kafka_topic_for() maps each event type to one of
-# these; streaming/ consumers subscribe to them by the same names.
-TRADES_TOPIC = "market.trades.raw"
-DEPTH_TOPIC = "market.depth.raw"
+# The live pipeline's topic names; another pipeline's are the same with its
+# name in front (replay.market.trades.raw). Use TRADES_TOPIC & co. (below),
+# which are this pipeline's.
+#
+# ingestion/schema.py's kafka_topic_for() maps each event type to one of the
+# first two; streaming/ consumers subscribe to them by the same names.
+_TRADES_TOPIC = "market.trades.raw"
+_DEPTH_TOPIC = "market.depth.raw"
 
 # streaming/jobs/whale_detector.py publishes each flagged trade here (see its
 # docstring for the message shape); backend/routers/whales.py serves it
 # over /ws/whales, and alerts/telegram_bot.py sends it to Telegram.
-WHALE_ALERTS_TOPIC = "alerts.whales"
+_WHALE_ALERTS_TOPIC = "alerts.whales"
 
 # streaming/jobs/candle_aggregator.py publishes every 1-minute candle update
 # here, keyed by symbol; streaming/jobs/indicators.py computes indicators
 # from it. streaming/candle_topic.py owns the message shape.
-CANDLES_TOPIC = "market.candles.1m"
+_CANDLES_TOPIC = "market.candles.1m"
+
+LIVE = "live"
+REPLAY = "replay"
+PIPELINE_NAMES: Tuple[str, ...] = (LIVE, REPLAY)
+
+# The replay's controls (Phase 4a): backend/routers/replay.py pushes commands
+# onto the list, replay/replay_service.py pops them and keeps its status in
+# the key. Outside every pipeline's Redis prefix, so clearing the replay
+# pipeline's keys before a run never takes its controls with them.
+REPLAY_COMMANDS_KEY = "replay_control:commands"
+REPLAY_STATUS_KEY = "replay_control:status"
+
+
+@dataclass(frozen=True)
+class Pipeline:
+    """
+    Where one pipeline keeps what it owns: Kafka topics and consumer groups,
+    a Redis key prefix, a Postgres schema, and a Parquet root (with its
+    checkpoints).
+
+    The live pipeline's are the names DSView always had: no prefix, the
+    `public` schema, DATA_ROOT itself. Replay's (Phase 4a's kickoff decision
+    1, docs/ROADMAP.md) are the same names prefixed with "replay", so the
+    same jobs, started with DSVIEW_PIPELINE=replay, read and write only
+    replay's data. It can't share live's topics: a Spark query's watermark
+    is one value for every symbol it reads, so behind live trades every
+    replayed trade would be dropped as late.
+    """
+
+    name: str
+
+    def __post_init__(self) -> None:
+        if self.name not in PIPELINE_NAMES:
+            raise ValueError(f"unknown pipeline {self.name!r}: DSVIEW_PIPELINE must be one of {list(PIPELINE_NAMES)}")
+
+    @property
+    def is_live(self) -> bool:
+        return self.name == LIVE
+
+    def _prefixed(self, live_name: str) -> str:
+        return live_name if self.is_live else f"{self.name}.{live_name}"
+
+    @property
+    def trades_topic(self) -> str:
+        return self._prefixed(_TRADES_TOPIC)
+
+    @property
+    def depth_topic(self) -> str:
+        return self._prefixed(_DEPTH_TOPIC)
+
+    @property
+    def whale_alerts_topic(self) -> str:
+        return self._prefixed(_WHALE_ALERTS_TOPIC)
+
+    @property
+    def candles_topic(self) -> str:
+        return self._prefixed(_CANDLES_TOPIC)
+
+    def consumer_group(self, live_group: str) -> str:
+        """This pipeline's name for a consumer group live calls `live_group`."""
+        return self._prefixed(live_group)
+
+    @property
+    def starting_offsets(self) -> str:
+        """
+        Where a consumer with nothing to resume from starts reading.
+
+        Live starts at the end: it serves what happens from now on. Replay
+        starts at the beginning, which is the start of the current run (the
+        replay service truncates its topics before each one), so trades
+        produced while a Spark job is still starting are never skipped.
+        """
+        return "latest" if self.is_live else "earliest"
+
+    @property
+    def redis_prefix(self) -> str:
+        """Put in front of every key and channel this pipeline writes ("" for live)."""
+        return "" if self.is_live else f"{self.name}:"
+
+    @property
+    def postgres_schema(self) -> str:
+        return "public" if self.is_live else self.name
+
+    @property
+    def postgres_dsn(self) -> str:
+        """
+        The database's DSN, with this pipeline's schema as the only one on
+        the search path (live's is the DSN as given: `public`, as always).
+
+        The only one, not first of several: a table replay lacks must fail,
+        not quietly resolve to live's.
+        """
+        return _DATABASE_DSN if self.is_live else _with_search_path(_DATABASE_DSN, self.postgres_schema)
+
+    @property
+    def data_root(self) -> str:
+        return _LAKE_ROOT if self.is_live else str(Path(_LAKE_ROOT) / self.name)
+
+
+def _with_search_path(dsn: str, schema: str) -> str:
+    """`dsn` (a URL or key=value conninfo) with libpq's options set to `-c search_path=<schema>`."""
+    option = f"-c search_path={schema}"
+    if "://" in dsn:
+        parts = urlsplit(dsn)
+        query = parse_qsl(parts.query, keep_blank_values=True)
+        if any(key == "options" for key, _ in query):
+            raise ValueError("DSVIEW_POSTGRES_DSN already sets `options`; a pipeline's DSN needs to set its own")
+        query.append(("options", option))
+        return urlunsplit(parts._replace(query=urlencode(query, quote_via=quote)))
+    if "options=" in dsn:
+        raise ValueError("DSVIEW_POSTGRES_DSN already sets `options`; a pipeline's DSN needs to set its own")
+    return f"{dsn} options='{option}'"
+
+
+LIVE_PIPELINE = Pipeline(LIVE)
+REPLAY_PIPELINE = Pipeline(REPLAY)
+
+# This process's pipeline, and its names: what every service uses unless it
+# names a pipeline itself (the backend serves both; replay/ reads live's
+# Bronze; the Telegram bot only ever reads live's whales).
+PIPELINE = Pipeline(PIPELINE_NAME)
+TRADES_TOPIC = PIPELINE.trades_topic
+DEPTH_TOPIC = PIPELINE.depth_topic
+WHALE_ALERTS_TOPIC = PIPELINE.whale_alerts_topic
+CANDLES_TOPIC = PIPELINE.candles_topic
+REDIS_PREFIX = PIPELINE.redis_prefix
+POSTGRES_DSN = PIPELINE.postgres_dsn
+DATA_ROOT = PIPELINE.data_root
 
 # The chart's timeframes, by the ids the REST API, Redis keys and Postgres
 # rows use. Every one is rolled up from 1-minute candles in buckets aligned

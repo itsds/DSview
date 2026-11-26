@@ -18,7 +18,7 @@ import logging
 import signal
 from typing import List
 
-from config.settings import KAFKA_BOOTSTRAP_SERVERS, SYMBOLS
+from config.settings import KAFKA_BOOTSTRAP_SERVERS, PIPELINE, SYMBOLS
 
 from base_client import BaseExchangeClient
 from binance_client import BinanceClient
@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 
 
 async def run() -> None:
+    if not PIPELINE.is_live:
+        # Exchange data is live's: the replay pipeline is fed from Bronze by replay/.
+        raise SystemExit(f"ingestion feeds the live pipeline only (DSVIEW_PIPELINE is {PIPELINE.name!r})")
     producer = MarketDataProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
     await producer.start()
 

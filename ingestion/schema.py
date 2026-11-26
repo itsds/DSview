@@ -21,7 +21,7 @@ from typing import List, Union
 
 from pydantic import BaseModel, Field
 
-from config.settings import DEPTH_TOPIC, TRADES_TOPIC
+from config.settings import PIPELINE, Pipeline
 
 
 class Exchange(str, Enum):
@@ -95,9 +95,11 @@ class DepthUpdate(_BaseEvent):
 MarketEvent = Union[TradeEvent, DepthUpdate]
 
 
-def kafka_topic_for(event: MarketEvent) -> str:
+def kafka_topic_for(event: MarketEvent, pipeline: Pipeline = PIPELINE) -> str:
     """
-    Central place that maps an event to its destination Kafka topic.
+    Central place that maps an event to its destination Kafka topic, in
+    `pipeline` (this process's, by default: live for ingestion, replay for
+    replay/'s feed).
 
     Keeping this here (rather than duplicating the mapping in producer.py
     and in every client) means adding a new event type only requires a
@@ -106,7 +108,7 @@ def kafka_topic_for(event: MarketEvent) -> str:
     same names and must not import from ingestion/.
     """
     topic_map = {
-        EventType.TRADE: TRADES_TOPIC,
-        EventType.DEPTH: DEPTH_TOPIC,
+        EventType.TRADE: pipeline.trades_topic,
+        EventType.DEPTH: pipeline.depth_topic,
     }
     return topic_map[EventType(event.event_type)]

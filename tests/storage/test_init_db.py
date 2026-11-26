@@ -83,3 +83,27 @@ def test_init_db_creates_footprint_1m_keyed_by_symbol_minute_and_level(pg):
         """
     ).fetchall()
     assert primary_key["columns"] == ["symbol", "window_start", "price"]
+
+
+def test_init_db_gives_the_replay_pipeline_the_same_tables_in_its_own_schema(pg, symbol):
+    import psycopg
+
+    from config.settings import REPLAY_PIPELINE
+
+    tables = {
+        (row["table_schema"], row["table_name"])
+        for row in pg.execute(
+            "SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema IN ('public', 'replay')"
+        )
+    }
+    names = {"candles_1m", "candle_indicators", "candle_revisions", "footprint_1m"}
+    assert {name for schema, name in tables if schema == "replay"} == names
+    assert {name for schema, name in tables if schema == "public"} >= names
+
+    # The replay's DSN writes the replay's tables, and live's never see it.
+    with psycopg.connect(REPLAY_PIPELINE.postgres_dsn, autocommit=True) as replay:
+        replay.execute(
+            "INSERT INTO candles_1m VALUES (%s, '2026-11-20T10:00Z', '2026-11-20T10:01Z', 1, 1, 1, 1, 1, 1)", (symbol,)
+        )
+    assert pg.execute("SELECT count(*) AS n FROM candles_1m WHERE symbol = %s", (symbol,)).fetchone()["n"] == 0
+    assert pg.execute("SELECT count(*) AS n FROM replay.candles_1m WHERE symbol = %s", (symbol,)).fetchone()["n"] == 1
