@@ -27,12 +27,12 @@ export const LIVE_REFRESH_MS = 5_000;
 const RETRY_AFTER_MS = 10_000;
 const MAX_ENTRIES = 50; // profiles kept: drawings on screen, plus some dragged-through ranges
 
-export function createProfileData({ symbol, onLoad, fetch = fetchProfile, now = Date.now }) {
+export function createProfileData({ symbol, pipeline, onLoad, fetch = fetchProfile, now = Date.now }) {
   const cache = new Map(); // key -> { profile, fetchedAt, loading, failedAt }
 
   function load(entry, request) {
     entry.loading = true;
-    fetch(symbol, request)
+    fetch(symbol, pipeline === undefined ? request : { ...request, pipeline })
       .then((profile) => {
         entry.profile = profile;
         entry.fetchedAt = now();

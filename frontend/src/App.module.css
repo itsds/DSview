@@ -23,6 +23,7 @@
 
 .chart {
   grid-area: chart;
+  position: relative; /* the replay bar sits over the chart */
   min-width: 0;
   min-height: 0;
   overflow: hidden;

@@ -8,7 +8,11 @@
  * its data: useCandleHistory.js backfills over REST, useLiveCandles.js
  * streams 1m candles over the WebSocket, and useTimeframeCandle.js rolls
  * that stream up to the selected timeframe; useWhaleTrades.js feeds the
- * right panel's whale list. Drawings live in a per-symbol
+ * right panel's whale list. During a replay (Phase 4a) all of them, the
+ * chart's own fetches and sockets included, follow the replay's feed
+ * instead of live's (lib/pipelines.js): useReplay.js polls the replay
+ * service, the top bar's Replay button picks the bar to start from, and
+ * ReplayBar.jsx steers it. Drawings live in a per-symbol
  * drawing store and indicators in useIndicators.js, both outliving chart
  * remounts, so they survive timeframe switches. The chart sits in an
  * ErrorBoundary so a chart error can't blank the whole page. Symbol
@@ -17,7 +21,7 @@
  * Author: @DS
  */
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import styles from "./App.module.css";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
@@ -28,14 +32,17 @@ import BottomBar from "./components/layout/BottomBar.jsx";
 import DrawingToolbar from "./components/layout/DrawingToolbar.jsx";
 import RightPanel from "./components/layout/RightPanel.jsx";
 import TopBar from "./components/layout/TopBar.jsx";
+import ReplayBar from "./components/replay/ReplayBar.jsx";
 import { createDrawingStore } from "./drawing/drawingStore.js";
 import { CROSSHAIR_TOOL } from "./drawing/tools.js";
 import { useCandleHistory } from "./hooks/useCandleHistory.js";
 import { useChartSettings } from "./hooks/useChartSettings.js";
 import { useIndicators } from "./hooks/useIndicators.js";
 import { useLiveCandles } from "./hooks/useLiveCandles.js";
+import { useReplay } from "./hooks/useReplay.js";
 import { useTimeframeCandle } from "./hooks/useTimeframeCandle.js";
 import { useWhaleTrades } from "./hooks/useWhaleTrades.js";
+import { REPLAY, feedFor, replayActive } from "./lib/pipelines.js";
 
 const SYMBOL = "BTCUSDT";
 const DEFAULT_TIMEFRAME = "1m";
@@ -49,10 +56,31 @@ export default function App() {
   const drawingStore = useMemo(() => createDrawingStore(SYMBOL), []);
   const indicators = useIndicators();
   const chartSettings = useChartSettings();
-  const history = useCandleHistory(SYMBOL, timeframe);
-  const minuteCandle = useLiveCandles(SYMBOL);
-  const candle = useTimeframeCandle(SYMBOL, timeframe, minuteCandle);
-  const whales = useWhaleTrades();
+  const replay = useReplay();
+  const [pickingReplayStart, setPickingReplayStart] = useState(false);
+  const feed = feedFor(replay.status, SYMBOL);
+  const history = useCandleHistory(SYMBOL, timeframe, feed);
+  const minuteCandle = useLiveCandles(SYMBOL, feed);
+  const candle = useTimeframeCandle(SYMBOL, timeframe, minuteCandle, feed);
+  const whales = useWhaleTrades(feed);
+
+  // The chart hands the clicked bar's time here while a start is being picked.
+  const startReplayRef = useRef(replay.start);
+  startReplayRef.current = replay.start;
+  const pickReplayStart = useCallback((time) => {
+    setPickingReplayStart(false);
+    startReplayRef.current(SYMBOL, time);
+  }, []);
+
+  useEffect(() => {
+    if (!pickingReplayStart) return undefined;
+    setActiveTool(CROSSHAIR_TOOL); // a click picks the bar, rather than placing a drawing
+    const onKey = (event) => {
+      if (event.key === "Escape") setPickingReplayStart(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pickingReplayStart]);
 
   const editing = indicators.indicators.find((indicator) => indicator.id === editingId) ?? null;
 
@@ -78,6 +106,12 @@ export default function App() {
           onTimeframeChange={setTimeframe}
           onIndicatorsClick={() => setPickerOpen(true)}
           chartSettings={chartSettings}
+          replay={{
+            available: replay.available,
+            active: replayActive(replay.status),
+            picking: pickingReplayStart,
+            onClick: () => setPickingReplayStart((picking) => !picking),
+          }}
         />
       </div>
       <div className={styles.tools}>
@@ -90,8 +124,8 @@ export default function App() {
         />
       </div>
       <main className={styles.chart}>
-        {/* Keyed so a switch mounts a fresh chart (and clears any error). */}
-        <ErrorBoundary key={`${SYMBOL}|${timeframe}`} name="chart">
+        {/* Keyed so a switch (of symbol, timeframe, or live/replay run) mounts a fresh chart and clears any error. */}
+        <ErrorBoundary key={`${SYMBOL}|${timeframe}|${feed.key}`} name="chart">
           <CandleChart
             symbol={SYMBOL}
             timeframe={timeframe}
@@ -105,8 +139,25 @@ export default function App() {
             indicatorActions={indicatorActions}
             chartType={chartSettings.chartType}
             footprintRows={chartSettings.footprintRows}
+            pipeline={feed.pipeline}
+            onPickReplayStart={pickingReplayStart ? pickReplayStart : null}
           />
         </ErrorBoundary>
+        {replayActive(replay.status) && (
+          <ReplayBar
+            status={replay.status}
+            speed={replay.speed}
+            error={replay.error}
+            onPlay={replay.resume}
+            onPause={replay.pause}
+            onSpeed={replay.setSpeed}
+            onSelectBar={() => setPickingReplayStart(true)}
+            onExit={() => {
+              setPickingReplayStart(false);
+              replay.stop();
+            }}
+          />
+        )}
       </main>
       <div className={styles.panel}>
         <RightPanel
@@ -114,6 +165,7 @@ export default function App() {
           candle={minuteCandle}
           whaleTrades={whales.trades}
           whaleStatus={whales.status}
+          replaying={feed.pipeline === REPLAY}
         />
       </div>
       <div className={styles.bottom}>

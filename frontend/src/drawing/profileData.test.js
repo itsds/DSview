@@ -76,3 +76,12 @@ describe("createProfileData", () => {
     expect(requests).toHaveLength(2);
   });
 });
+
+describe("createProfileData for a replay", () => {
+  it("asks for the replay's profiles", () => {
+    const fetch = vi.fn(() => new Promise(() => {}));
+    const profiles = createProfileData({ symbol: "BTCUSDT", pipeline: "replay", fetch, now: () => 0 });
+    profiles.get(100, 400, 24);
+    expect(fetch).toHaveBeenCalledWith("BTCUSDT", { start: 100, end: 400, rows: 24, pipeline: "replay" });
+  });
+});

@@ -38,7 +38,7 @@ function utcTime(iso) {
   return iso ? new Date(iso).toISOString().slice(11, 19) : "";
 }
 
-export default function RightPanel({ symbol, candle, whaleTrades, whaleStatus }) {
+export default function RightPanel({ symbol, candle, whaleTrades, whaleStatus, replaying = false }) {
   const last = candle ? Number(candle.close).toFixed(2) : "—";
   const threshold = whaleTrades[0]?.threshold;
 
@@ -74,7 +74,7 @@ export default function RightPanel({ symbol, candle, whaleTrades, whaleStatus })
             Whale trades
           </h2>
           <span className={styles.status} data-status={whaleStatus} role="status">
-            {STATUS_LABELS[whaleStatus]}
+            {replaying && whaleStatus === "live" ? "Replay" : STATUS_LABELS[whaleStatus]}
           </span>
         </div>
         {threshold && <p className={styles.caption}>{usd.format(threshold)} or more · times in UTC</p>}

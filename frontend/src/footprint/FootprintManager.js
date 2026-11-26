@@ -48,10 +48,11 @@ const RETRY_AFTER_MS = 10_000;
 const MAX_BARS_PER_REQUEST = 500; // backend/routers/footprint.py's MAX_BARS
 
 export class FootprintManager {
-  constructor({ chart, candleSeries, symbol, timeframe, theme, onStatus }) {
+  constructor({ chart, candleSeries, symbol, timeframe, theme, onStatus, pipeline }) {
     this._chart = chart;
     this._series = candleSeries;
     this._symbol = symbol;
+    this._pipeline = pipeline; // whose footprint (lib/pipelines.js); live's when undefined
     this._timeframe = timeframe;
     this._barSeconds = timeframeSeconds(timeframe);
     this._onStatus = onStatus;
@@ -194,7 +195,7 @@ export class FootprintManager {
     const requested = missing.filter((time) => time < end).map((time) => `${rowSize}:${time}`);
     requested.forEach((key) => this._pending.add(key));
     const store = this._store;
-    fetchFootprint(this._symbol, { timeframe: this._timeframe, start, end, rowSize })
+    fetchFootprint(this._symbol, { timeframe: this._timeframe, start, end, rowSize, pipeline: this._pipeline })
       .then((bars) => {
         if (this._destroyed || store !== this._store) return;
         store.addHistory(rowSize, start, end, bars);
@@ -215,7 +216,13 @@ export class FootprintManager {
     if (this._seeding.has(bar)) return;
     this._seeding.add(bar);
     const store = this._store;
-    fetchFootprint(this._symbol, { timeframe: "1m", start: bar, end: bar + this._barSeconds, rowSize: FOOTPRINT_PRICE_STEP })
+    fetchFootprint(this._symbol, {
+      timeframe: "1m",
+      start: bar,
+      end: bar + this._barSeconds,
+      rowSize: FOOTPRINT_PRICE_STEP,
+      pipeline: this._pipeline,
+    })
       .then((minutes) => {
         if (this._destroyed || store !== this._store) return;
         store.seed(bar, minutes);

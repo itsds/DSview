@@ -16,17 +16,18 @@
 import { useEffect, useState } from "react";
 
 import { fetchCandles } from "../api/candles.js";
+import { LIVE_FEED } from "../lib/pipelines.js";
 
 const NO_CANDLES = [];
 
-export function useCandleHistory(symbol, timeframe) {
-  const key = `${symbol}|${timeframe}`;
+export function useCandleHistory(symbol, timeframe, feed = LIVE_FEED) {
+  const key = `${symbol}|${timeframe}|${feed.key}`;
   const [loaded, setLoaded] = useState({ key: null, candles: NO_CANDLES });
 
   useEffect(() => {
     let cancelled = false;
 
-    fetchCandles(symbol, { timeframe })
+    fetchCandles(symbol, { timeframe, pipeline: feed.pipeline })
       .then((candles) => {
         if (!cancelled) setLoaded({ key, candles });
       })
@@ -35,7 +36,7 @@ export function useCandleHistory(symbol, timeframe) {
     return () => {
       cancelled = true;
     };
-  }, [key, symbol, timeframe]);
+  }, [key, symbol, timeframe, feed.pipeline]);
 
   return loaded.key === key ? loaded.candles : NO_CANDLES;
 }

@@ -30,6 +30,7 @@
 import { useEffect, useState } from "react";
 
 import { BACKEND_WS_URL } from "../config.js";
+import { LIVE_FEED, withPipeline } from "../lib/pipelines.js";
 import { openReconnectingSocket } from "../lib/reconnectingSocket.js";
 
 // Alerts replayed on each connect — and the most trades kept, since the
@@ -37,23 +38,25 @@ import { openReconnectingSocket } from "../lib/reconnectingSocket.js";
 export const BACKLOG = 50;
 
 /** "connecting" until the first open, "live" while open, "reconnecting" between attempts. */
-export function useWhaleTrades() {
-  const [trades, setTrades] = useState([]);
+export function useWhaleTrades(feed = LIVE_FEED) {
+  const [trades, setTrades] = useState({ key: null, list: [] });
   const [status, setStatus] = useState("connecting");
 
-  useEffect(
-    () =>
-      openReconnectingSocket(`${BACKEND_WS_URL}/ws/whales?backlog=${BACKLOG}`, {
-        onMessage: (data) => {
-          const trade = parseTrade(data);
-          if (trade) setTrades((previous) => addTrade(previous, trade));
-        },
-        onStatus: setStatus,
-      }),
-    [],
-  );
+  useEffect(() => {
+    // A switch to or from a replay starts the list afresh: the backlog fills it.
+    setTrades({ key: feed.key, list: [] });
+    setStatus("connecting");
+    const params = withPipeline(new URLSearchParams({ backlog: String(BACKLOG) }), feed.pipeline);
+    return openReconnectingSocket(`${BACKEND_WS_URL}/ws/whales?${params}`, {
+      onMessage: (data) => {
+        const trade = parseTrade(data);
+        if (trade) setTrades((previous) => ({ key: feed.key, list: addTrade(previous.key === feed.key ? previous.list : [], trade) }));
+      },
+      onStatus: setStatus,
+    });
+  }, [feed.key]);
 
-  return { trades, status };
+  return { trades: trades.key === feed.key ? trades.list : [], status };
 }
 
 /** One message from /ws/whales as a trade, or null (logged) if it isn't a JSON object. */

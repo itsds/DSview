@@ -23,6 +23,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { fetchCandles } from "../api/candles.js";
+import { LIVE_FEED } from "../lib/pipelines.js";
 import { MINUTE_SECONDS, bucketStart, candleTime, rollUp, timeframeSeconds } from "../lib/timeframes.js";
 
 function emptyBucket() {
@@ -43,10 +44,10 @@ function fold(bucket, minuteCandles, seconds, { overwrite }) {
   }
 }
 
-export function useTimeframeCandle(symbol, timeframe, minuteCandle) {
+export function useTimeframeCandle(symbol, timeframe, minuteCandle, feed = LIVE_FEED) {
   const seconds = timeframeSeconds(timeframe);
   const passThrough = seconds === MINUTE_SECONDS;
-  const key = `${symbol}|${timeframe}`;
+  const key = `${symbol}|${timeframe}|${feed.key}`;
   const bucketRef = useRef(emptyBucket());
   const [rolled, setRolled] = useState({ key: null, candle: null });
 
@@ -64,7 +65,7 @@ export function useTimeframeCandle(symbol, timeframe, minuteCandle) {
     if (passThrough) return;
 
     let cancelled = false;
-    fetchCandles(symbol, { timeframe: "1m", limit: seconds / MINUTE_SECONDS })
+    fetchCandles(symbol, { timeframe: "1m", limit: seconds / MINUTE_SECONDS, pipeline: feed.pipeline })
       .then((candles) => {
         if (cancelled) return;
         fold(bucketRef.current, candles, seconds, { overwrite: false });

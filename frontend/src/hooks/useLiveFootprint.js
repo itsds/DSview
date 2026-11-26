@@ -22,9 +22,10 @@ import { useEffect, useRef } from "react";
 
 import { parseFootprintMessage } from "../api/footprint.js";
 import { BACKEND_WS_URL } from "../config.js";
+import { LIVE, withPipeline } from "../lib/pipelines.js";
 import { openReconnectingSocket } from "../lib/reconnectingSocket.js";
 
-export function useLiveFootprint(symbol, enabled, onUpdate) {
+export function useLiveFootprint(symbol, enabled, onUpdate, pipeline = LIVE) {
   const callback = useRef(onUpdate);
   useEffect(() => {
     callback.current = onUpdate;
@@ -32,11 +33,13 @@ export function useLiveFootprint(symbol, enabled, onUpdate) {
 
   useEffect(() => {
     if (!enabled) return undefined;
-    return openReconnectingSocket(`${BACKEND_WS_URL}/ws/footprint/${encodeURIComponent(symbol)}`, {
+    const params = withPipeline(new URLSearchParams(), pipeline);
+    const query = params.toString() ? `?${params}` : "";
+    return openReconnectingSocket(`${BACKEND_WS_URL}/ws/footprint/${encodeURIComponent(symbol)}${query}`, {
       onMessage: (data) => {
         const update = parseFootprintMessage(data);
         if (update) callback.current(update);
       },
     });
-  }, [symbol, enabled]);
+  }, [symbol, enabled, pipeline]);
 }

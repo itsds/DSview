@@ -12,6 +12,7 @@
 
 import { BACKEND_HTTP_URL } from "../config.js";
 import { parseLevels } from "../footprint/levels.js";
+import { withPipeline } from "../lib/pipelines.js";
 
 const toIso = (seconds) => new Date(seconds * 1000).toISOString();
 const toSeconds = (iso) => Math.floor(new Date(iso).getTime() / 1000);
@@ -25,10 +26,13 @@ async function getJson(path, params) {
 /**
  * The footprint of `symbol`'s `timeframe` bars starting in [start, end)
  * (Unix seconds), in rows `rowSize` wide: [{ time, levels }], oldest first.
- * Bars without trades aren't listed.
+ * Bars without trades aren't listed. `pipeline`: whose (lib/pipelines.js), live's by default.
  */
-export async function fetchFootprint(symbol, { timeframe, start, end, rowSize }) {
-  const params = new URLSearchParams({ timeframe, start: toIso(start), end: toIso(end), row_size: String(rowSize) });
+export async function fetchFootprint(symbol, { timeframe, start, end, rowSize, pipeline }) {
+  const params = withPipeline(
+    new URLSearchParams({ timeframe, start: toIso(start), end: toIso(end), row_size: String(rowSize) }),
+    pipeline,
+  );
   const bars = await getJson(`/footprint/${encodeURIComponent(symbol)}`, params);
   return bars.map((bar) => ({ time: toSeconds(bar.window_start), levels: parseLevels(bar.levels) }));
 }
@@ -38,10 +42,10 @@ export async function fetchFootprint(symbol, { timeframe, start, end, rowSize })
  * now), in about `rows` rows or, given `rowSize`, rows that wide:
  * { rowSize, firstMinute, lastMinute, levels }, firstMinute/lastMinute
  * being the range's oldest and newest minute with any footprint (null
- * when it has none).
+ * when it has none). `pipeline` as for fetchFootprint().
  */
-export async function fetchProfile(symbol, { start, end, rows, rowSize }) {
-  const params = new URLSearchParams({ start: toIso(start) });
+export async function fetchProfile(symbol, { start, end, rows, rowSize, pipeline }) {
+  const params = withPipeline(new URLSearchParams({ start: toIso(start) }), pipeline);
   if (end !== undefined) params.set("end", toIso(end));
   if (rowSize !== undefined) params.set("row_size", String(rowSize));
   else if (rows !== undefined) params.set("rows", String(rows));

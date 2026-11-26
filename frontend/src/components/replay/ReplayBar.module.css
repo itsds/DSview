@@ -1,0 +1,110 @@
+.bar {
+  position: absolute;
+  bottom: 28px; /* above the time axis */
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4; /* over the chart, its legend and the drawings */
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100% - 24px);
+  padding: 4px 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.badge {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: var(--radius-control);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.state {
+  flex-shrink: 0;
+  padding: 0 4px;
+  color: var(--color-text-muted);
+}
+
+.failed {
+  color: var(--color-down);
+  white-space: normal;
+  max-width: 360px;
+}
+
+.clock {
+  flex-shrink: 0;
+  padding: 0 4px;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.divider {
+  flex-shrink: 0;
+  align-self: stretch;
+  width: 1px;
+  margin: 4px 2px;
+  background: var(--color-border);
+}
+
+.button,
+.speed {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  min-width: 28px;
+  justify-content: center;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.button:hover,
+.speed:hover {
+  background: var(--color-surface-hover);
+}
+
+.button:focus-visible,
+.speed:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.button[aria-disabled="true"] {
+  color: var(--color-text-disabled);
+  background: transparent;
+  cursor: default;
+}
+
+.speeds {
+  display: flex;
+  gap: 1px;
+}
+
+.current,
+.current:hover {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.error {
+  flex-shrink: 0;
+  padding: 0 4px;
+  color: var(--color-warning);
+}
