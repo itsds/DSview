@@ -102,6 +102,7 @@ jobs:
           -r alerts/requirements.txt
           -r backfill/requirements.txt
           -r replay/requirements.txt
+          -r backtest/requirements.txt
           -r tests/requirements.txt
 
       - name: Install frontend dependencies
