@@ -34,6 +34,7 @@ from fastapi import APIRouter, WebSocket, status
 from config.settings import TIMEFRAMES
 
 from redis_client import CandleRedisReader
+from routers.pipelines import PipelineName, pipeline_query, resolve
 from routers.push import push_until_disconnect
 
 logger = logging.getLogger(__name__)
@@ -42,14 +43,16 @@ router = APIRouter()
 
 
 @router.websocket("/ws/indicators/{symbol}")
-async def indicator_updates(websocket: WebSocket, symbol: str, timeframe: str = "1m") -> None:
+async def indicator_updates(
+    websocket: WebSocket, symbol: str, timeframe: str = "1m", pipeline: PipelineName = pipeline_query()
+) -> None:
     """Push `symbol`'s indicator values at `timeframe` until the client disconnects."""
     await websocket.accept()
     if timeframe not in TIMEFRAMES:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=f"timeframe must be one of {list(TIMEFRAMES)}")
         return
 
-    reader = CandleRedisReader()
+    reader = CandleRedisReader(prefix=resolve(pipeline).redis_prefix)
     try:
         error = await push_until_disconnect(websocket, _push_indicators(websocket, reader, symbol, timeframe))
     finally:

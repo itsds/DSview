@@ -25,6 +25,7 @@ from fastapi import APIRouter, HTTPException, Query
 from config.settings import TIMEFRAMES
 
 from postgres_client import CandleHistoryReader
+from routers.pipelines import PipelineName, pipeline_query, resolve
 
 router = APIRouter()
 
@@ -40,6 +41,7 @@ def get_candle_history(
     timeframe: str = "1m",
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     before: datetime | None = None,
+    pipeline: PipelineName = pipeline_query(),
 ) -> list[dict]:
     """Return up to `limit` candles for `symbol` at `timeframe`, oldest first.
 
@@ -50,7 +52,7 @@ def get_candle_history(
     if before is not None and before.tzinfo is None:
         before = before.replace(tzinfo=timezone.utc)  # a naive timestamp means UTC, like everything else here
 
-    reader = CandleHistoryReader()
+    reader = CandleHistoryReader(dsn=resolve(pipeline).postgres_dsn)
     try:
         return reader.get_candles(symbol, limit=limit, timeframe=timeframe, before=before)
     finally:
