@@ -74,8 +74,8 @@ then confirmed on the laptop for what only the laptop has.
 | 2 | Technical indicators in Spark | L | Done |
 | 3a | History backfill | M | Done |
 | 3b | Volume footprint | L | Done |
-| 4a | Replay | L | In progress |
-| 4b | Backtest | M | Not started |
+| 4a | Replay | L | Done |
+| 4b | Backtest | M | In progress |
 | 4c | Long/short ratio | M | Not started |
 | 5 | More markets | L | Not started |
 | 6 | Production readiness | L | Not started |
@@ -475,6 +475,61 @@ next update to show the bar in progress.
 
 ### Phase 4b — backtest
 
+**Kickoff decisions** (made 2026-11-26, inside Phase 4's decision 3):
+
+1. **Every run is kept.** Each run has an id, its strategy, parameters,
+   timeframe and span; the results panel lists runs newest first and the
+   chart marks the one picked. A rerun is a new run, which is how "a rerun
+   gives the same result" is checked.
+2. **The results panel sits under the chart**, opened from the bottom bar,
+   as TradingView's Strategy Tester does; the chart gets shorter while it
+   is open.
+3. **Trade markers show on every timeframe**, each fill on the bar that
+   contains it, whatever timeframe the run traded; on bigger timeframes
+   several can share a bar.
+4. **The sample strategy is always in the market, on 1h by default**: an
+   EMA 20 cross above EMA 50 closes any short and goes long, a cross below
+   closes any long and goes short. Any timeframe by flag.
+
+**Choices made at kickoff** (inside the decisions; easy to change):
+
+- **Plain Python, no Spark.** The backtest reads Bronze's `klines_1m` with
+  pyarrow and feeds `IndicatorEngine` itself (`final_only`, settled at
+  once, as Gold's indicators do). Timed at kickoff: a year of minutes
+  through the engine takes 3 s on all six timeframes, 0.4 s on 1h alone.
+- **EMAs warm up from the first stored minute**, whatever `--start` says:
+  Spark seeds from the oldest row of `candles_1m`, and an EMA depends on
+  every bar before it, so a backtest seeded at its start would disagree
+  with the chart. The strategy only trades from `--start`. Zero-trade
+  klines are skipped, as `candle_store.py` skips them on the way into
+  `candles_1m`, or they would add bars Spark never saw; a bar counts once
+  its last minute is in, so the bar in progress at the data's end is
+  never traded.
+- **The check against Spark:** every bar's EMA 20, 50 and 200 over the
+  run's span against `candle_indicators`, exactly. Strategies can ask for
+  any EMA length (the engine takes any), but only the server's lengths
+  have Spark values to compare with.
+- **Equity is marked to market at every bar's close**; max drawdown comes
+  from that curve, so it counts losses inside an open trade. A position
+  still open when the data ends is closed at the last bar's close and
+  marked as such in the trade list.
+- **Shorts mirror longs:** no borrow interest or funding (Binance spot
+  can't short; a margin or futures short would pay one of them). Fills at
+  the next bar's open, 0.1% of the traded value per side, no slippage.
+- **The footprint for strategies that ask for it:** a strategy that
+  declares it gets each bar's levels, bucketed as
+  `backfill/footprint_rows.py` does, over the span `agg_trades` covers
+  (30 days by default). The sample strategy doesn't use it; a test
+  strategy covers it.
+- **Live's lake and schema only:** backtests read live's Bronze and keep
+  their results in `public` (`backtest_runs`, `backtest_trades`,
+  `backtest_equity`); a replay has nothing to add.
+- **Run from `backtest/`:** `python run_backtest.py --strategy ema_cross`
+  (`--timeframe`, `--start`, `--end`, strategy parameters). The diagram's
+  backtest node reads Bronze's `klines_1m` and `agg_trades`, not Silver's
+  trades and Gold's candles as drawn today (Gold only holds what the live
+  stream finalized), and writes to Postgres for the backend.
+
 - [ ] Backtest engine (`backtest/`): reads the lake's history, rolls it up
       into the chart's timeframes, steps a strategy bar by bar with
       `IndicatorEngine`'s EMAs, fills at the next bar's open with fees.
@@ -484,6 +539,8 @@ next update to show the bar in progress.
 - [ ] Frontend: trade markers on the chart and a results panel (equity
       curve, net profit, win rate, max drawdown, profit factor, the trade
       list).
+- [ ] `docs/architecture.html`: the backtest node reads Bronze's
+      `klines_1m` and `agg_trades` and writes its results to Postgres.
 
 **Done when:** the sample strategy backtests over a year of stored
 history; the EMAs it trades on equal Spark's on every bar; a rerun gives
