@@ -31,7 +31,6 @@ from helpers import TopicTail, async_wait_for
 START = datetime(2026, 11, 20, 10, 0, tzinfo=timezone.utc)
 START_MS = int(START.timestamp() * 1000)
 MINUTES = 6
-WHALE_THRESHOLD = Decimal("400")  # a handful of SyntheticMarket's trades clear it
 
 
 @pytest.mark.spark
@@ -41,8 +40,12 @@ async def test_a_replay_rebuilds_binances_klines_in_its_own_namespace(
 ):
     market = SyntheticMarket()
     trades = write_agg_trades(lake, symbol, START_MS, START_MS + MINUTES * 60_000, market)
-    whales = [t for t in trades if Decimal(t["p"]) * Decimal(t["q"]) >= WHALE_THRESHOLD]
-    assert whales, "the threshold should catch some trades"
+    # SyntheticMarket's price level depends on the symbol, so the whale
+    # threshold comes from the trades: the top tenth or so of them clear it.
+    notionals = sorted(Decimal(t["p"]) * Decimal(t["q"]) for t in trades)
+    threshold = notionals[len(notionals) * 9 // 10]
+    whales = [t for t in trades if Decimal(t["p"]) * Decimal(t["q"]) >= threshold]
+    assert 0 < len(whales) < len(trades)
     # Live history before the start, for the seed (and the indicators' warm-up).
     for i in range(1, 31):
         minute = START - timedelta(minutes=i)
@@ -52,7 +55,7 @@ async def test_a_replay_rebuilds_binances_klines_in_its_own_namespace(
     control = ReplayControl()
     producer = MarketDataProducer(pipeline=REPLAY_PIPELINE, client_id="replay-e2e")
     await producer.start()
-    jobs_env = {"DSVIEW_DATA_ROOT": str(lake), "DSVIEW_WHALE_THRESHOLD_USD": str(WHALE_THRESHOLD)}
+    jobs_env = {"DSVIEW_DATA_ROOT": str(lake), "DSVIEW_WHALE_THRESHOLD_USD": str(threshold)}
     service = ReplayService(
         control,
         producer,
