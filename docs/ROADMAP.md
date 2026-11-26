@@ -33,7 +33,12 @@ timeframe. Replay plays Bronze's history (the live recording, or the
 backfill's aggTrades) back through a separate copy of the pipeline with
 its own topics, schema and keys, at 1× to 1000× or as fast as Spark keeps
 up: the Replay button picks a bar and the chart, indicators, footprint
-and whales show the past forming bar by bar while live carries on. All hardcoded
+and whales show the past forming bar by bar while live carries on.
+Backtests run a Python strategy from the command line over a year of
+Bronze's klines, on EMAs from Spark's own engine that equal the chart's on
+every bar; each run's trades and equity curve go to Postgres, and the
+Strategy Tester under the chart shows them, with the trades marked on the
+chart. All hardcoded
 config lives in `config/settings.py`. `./scripts/test.sh` runs a pytest
 suite over real Kafka, Redis and Postgres plus the frontend's Vitest
 tests, and GitHub Actions runs it on every push.
@@ -530,21 +535,72 @@ next update to show the bar in progress.
   trades and Gold's candles as drawn today (Gold only holds what the live
   stream finalized), and writes to Postgres for the backend.
 
-- [ ] Backtest engine (`backtest/`): reads the lake's history, rolls it up
+- [x] Backtest engine (`backtest/`): reads the lake's history, rolls it up
       into the chart's timeframes, steps a strategy bar by bar with
-      `IndicatorEngine`'s EMAs, fills at the next bar's open with fees.
-- [ ] Sample strategy: EMA 20/50 crossover, long and short.
-- [ ] Results: each run's trades, equity curve and stats in Postgres, served
-      by the backend.
-- [ ] Frontend: trade markers on the chart and a results panel (equity
+      `IndicatorEngine`'s EMAs, fills at the next bar's open with fees:
+      `lake_history.py`, `bar_series.py`, `strategy.py`, `broker.py`,
+      `backtester.py`, `indicator_check.py`, `run_backtest.py`.
+- [x] Sample strategy: EMA 20/50 crossover, long and short:
+      `strategies/ema_cross.py`.
+- [x] Results: each run's trades, equity curve and stats in Postgres, served
+      by the backend: `storage/ddl/backtests.sql`, `backtest_store.py`,
+      `backtest_stats.py`, `backend/routers/backtests.py`.
+- [x] Frontend: trade markers on the chart and a results panel (equity
       curve, net profit, win rate, max drawdown, profit factor, the trade
-      list).
-- [ ] `docs/architecture.html`: the backtest node reads Bronze's
-      `klines_1m` and `agg_trades` and writes its results to Postgres.
+      list): `components/backtest/StrategyTester.jsx`,
+      `backtest/BacktestMarkers.js`, `hooks/useBacktests.js`.
+- [x] `docs/architecture.html`: the backtest node reads Bronze's
+      `klines_1m` and `agg_trades` and writes its results to Postgres, with
+      the route, hook and panel after it: 88 movements.
 
 **Done when:** the sample strategy backtests over a year of stored
 history; the EMAs it trades on equal Spark's on every bar; a rerun gives
 the same result; the trades show on the chart.
+
+**Choices made while building** (inside the kickoff decisions; easy to
+change if you'd rather they went another way):
+
+- **The check runs with every backtest**: every bar's EMA 20, 50 and 200
+  against `candle_indicators`, stored with the run and shown in the panel.
+  A difference fails the run (exit status 1, the run still stored); a bar
+  Spark hasn't computed yet is counted, not failed.
+- **The strategy sees bars from `--start` on**; their EMAs were warmed up
+  from the oldest minute already. An order on the last bar has no open to
+  fill at and is dropped.
+- **A short that loses all the equity stops trading** (nothing left to
+  commit); liquidation isn't modelled.
+- **`same_as_run`** is worked out when a run is stored: the newest earlier
+  run with the same strategy, parameters, timeframe, span, capital and
+  fee whose trades and curve hash the same.
+- **Trades show on the chart while the Strategy Tester is open**, with a
+  "Trades on chart" toggle, so the chart is clean when you aren't looking
+  at a backtest. The picked run and the toggle are remembered.
+- **The equity curve is served thinned** to about 2,000 points, each
+  stretch's lowest and highest, so every trough and peak survives; the
+  trade list shows the newest 1,000 trades.
+- **Markers only on loaded bars**: lightweight-charts moves a marker with
+  no bar onto the nearest one, so every trade older than the first page
+  would pile up on the oldest bar; scroll-back adds them as it loads.
+
+Met in the cloud container, on a dev-style stack (Kafka, Redis, Postgres)
+with the candle aggregator and indicator job running on synthetic live
+trades and a year backfilled from a fake Binance (`tests/fake_binance.py`;
+526,722 traded minutes): the indicator job rebuilt the year after the
+backfill, then the sample strategy on 1h traded 8,778 bars (1,397 trades)
+with every bar's EMA 20, 50 and 200 equal to Spark's, in 5 s; the rerun was
+stored as run 2, "the same result as run 1"; on every other timeframe too
+every bar equals Spark's (1m 526,722 bars in 16 s, equity curve included;
+5m 105,344; 15m 35,114; 4h 2,194; 1D 365). The backend lists runs and
+serves a run's trades in 0.06 s, and thins the 1m run's 526,722-point
+curve to 2,001 points in 1.6 s. Chromium: the Strategy Tester opened from
+the bottom bar, the run picker, the overview's stats and equity curve, the
+trade list, markers on 5m and 4h for runs that traded other timeframes,
+the toggle, and the picked run remembered across a reload, with no page
+errors. The suite adds 51 Python tests (one through the real indicator
+job) and 13 Vitest tests. The fake market is a sawtooth that loses on
+every crossover once fees are paid, so the numbers say nothing about the
+strategy. Left for the laptop: the same over a year of Binance's own
+klines.
 
 ### Phase 4c — long/short ratio
 
