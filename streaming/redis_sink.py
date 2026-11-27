@@ -3,7 +3,9 @@ redis_sink.py
 
 Redis serving-layer writers for windowed output: CandleRedisSink for
 candle_aggregator.py's candles, FootprintRedisSink for its footprint
-levels, IndicatorRedisSink for jobs/indicators.py's indicator values.
+levels, IndicatorRedisSink for jobs/indicators.py's indicator values —
+and FuturesRatioRedisSink, jobs/futures_ratios.py's word that the
+long/short ratios changed.
 
 Structured Streaming has no built-in Redis sink, so candle_aggregator.py
 drives this through foreachBatch (see its module docstring for why).
@@ -208,6 +210,47 @@ class IndicatorRedisSink:
                 )
                 pipe.publish(f"{self._prefix}indicator_updates:{symbol}:{timeframe}", value)
             pipe.set(f"{self._prefix}indicators:{symbol}:{timeframe}", value, ex=self._ttl_seconds)
+        pipe.execute()
+
+
+class FuturesRatioRedisSink:
+    """
+    Tells connected charts that a symbol's long/short ratios changed (Phase
+    4c): a PUBLISH on `futures_ratio_updates:{symbol}` per consumer batch,
+
+        {"symbol": "BTCUSDT", "first_period": "2026-11-20T10:00:00+00:00",
+         "last_period": "2026-11-20T10:05:00+00:00"}
+
+    naming the oldest and newest 5-minute period it changed (ISO 8601, UTC).
+    backend/routers/futures_ratios.py rolls the bars those periods fall in
+    up from Postgres, per chart timeframe, and sends them on.
+
+    No SET of the newest values, unlike the other sinks: what a chart shows
+    is a bar rolled up from several periods at its own timeframe, which a
+    cached period can't stand in for, so a newly connected client gets its
+    bar from Postgres, and only the news of a change goes through Redis.
+    """
+
+    def __init__(self, host: str = REDIS_HOST, port: int = REDIS_PORT, prefix: str = REDIS_PREFIX) -> None:
+        self._client = redis.Redis(host=host, port=port, decode_responses=True)
+        self._prefix = prefix
+
+    def publish_changes(self, changed: Iterable[tuple]) -> None:
+        """`changed`: (symbol, period_start as an aware datetime) of every row a batch changed."""
+        spans: dict = {}
+        for symbol, start in changed:
+            first, last = spans.get(symbol, (start, start))
+            spans[symbol] = (min(first, start), max(last, start))
+        if not spans:
+            return
+        pipe = self._client.pipeline(transaction=False)
+        for symbol, (first, last) in spans.items():
+            message = {
+                "symbol": symbol,
+                "first_period": first.astimezone(timezone.utc).isoformat(),
+                "last_period": last.astimezone(timezone.utc).isoformat(),
+            }
+            pipe.publish(f"{self._prefix}futures_ratio_updates:{symbol}", json.dumps(message))
         pipe.execute()
 
 
