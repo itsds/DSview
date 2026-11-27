@@ -2,8 +2,8 @@
 redis_client.py
 
 Async Redis boundary for the backend service — the read-side counterpart
-to streaming/redis_sink.py's CandleRedisSink, FootprintRedisSink and
-IndicatorRedisSink, plus the replay service's controls
+to streaming/redis_sink.py's CandleRedisSink, FootprintRedisSink,
+IndicatorRedisSink and FuturesRatioRedisSink, plus the replay service's controls
 (ReplayControlClient). Kept as its own module so routers/ws.py,
 routers/indicators.py, routers/footprint.py and routers/replay.py never touch `redis` directly, mirroring the same producer/consumer-boundary pattern
 used elsewhere in this repo (see ingestion/producer.py).
@@ -59,10 +59,20 @@ class CandleRedisReader:
         """Yield each minute's footprint grid JSON as FootprintRedisSink publishes it."""
         return self._subscribe(f"{self._prefix}footprint_updates:{symbol}:1m")
 
-    async def _subscribe(self, channel: str) -> AsyncIterator[str]:
+    def subscribe_futures_ratio_updates(self, symbol: str) -> AsyncIterator[Optional[str]]:
+        """
+        Yield None once subscribed, then each "these periods changed" JSON as
+        FuturesRatioRedisSink publishes it. The None lets a caller read the
+        current state after subscribing, so no change falls in between.
+        """
+        return self._subscribe(f"{self._prefix}futures_ratio_updates:{symbol}", announce=True)
+
+    async def _subscribe(self, channel: str, announce: bool = False) -> AsyncIterator[Optional[str]]:
         pubsub = self._client.pubsub()
         await pubsub.subscribe(channel)
         try:
+            if announce:
+                yield None
             async for message in pubsub.listen():
                 if message["type"] == "message":
                     yield message["data"]

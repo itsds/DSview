@@ -9,8 +9,10 @@ push (routers/indicators.py, from Redis), the volume footprint
 (routers/footprint.py: history and profiles from Postgres's footprint_1m,
 the live minute from Redis), the WebSocket whale-alert feed
 (routers/whales.py, from Kafka's alerts.whales), the replay's controls
-(routers/replay.py, handed to replay/replay_service.py through Redis) and
-the backtest results (routers/backtests.py, from Postgres; live only).
+(routers/replay.py, handed to replay/replay_service.py through Redis),
+the backtest results (routers/backtests.py, from Postgres; live only) and
+the long/short ratios (routers/futures_ratios.py: history from Postgres,
+changes announced through Redis; live only).
 
 Every data route serves the live pipeline by default and the replay's with
 `?pipeline=replay` (routers/pipelines.py, Phase 4a).
@@ -33,6 +35,7 @@ from config.settings import CORS_ALLOWED_ORIGINS
 from routers.backtests import router as backtests_router
 from routers.candles import router as candles_router
 from routers.footprint import router as footprint_router
+from routers.futures_ratios import router as futures_ratios_router
 from routers.indicators import router as indicators_router
 from routers.replay import router as replay_router
 from routers.whales import router as whales_router
@@ -58,6 +61,7 @@ app.include_router(footprint_router)
 app.include_router(whales_router)
 app.include_router(replay_router)
 app.include_router(backtests_router)
+app.include_router(futures_ratios_router)
 
 
 @app.get("/health")
