@@ -9,7 +9,7 @@ Keep it current: tick a task when its commit lands, update the phase table
 when a phase is merged, and change the matching node's `status` in
 `docs/architecture.html` as each stage is built.
 
-Last updated: 2026-11-26
+Last updated: 2026-11-27
 
 ## Where things stand
 
@@ -80,8 +80,8 @@ then confirmed on the laptop for what only the laptop has.
 | 3a | History backfill | M | Done |
 | 3b | Volume footprint | L | Done |
 | 4a | Replay | L | Done |
-| 4b | Backtest | M | In progress |
-| 4c | Long/short ratio | M | Not started |
+| 4b | Backtest | M | Done |
+| 4c | Long/short ratio | M | In progress |
 | 5 | More markets | L | Not started |
 | 6 | Production readiness | L | Not started |
 | 7 | Stretch and future | XL | Not started |
@@ -615,15 +615,53 @@ klines.
 restarted poller fills in the periods it missed (inside Binance's 30
 days).
 
-Confirmed at kickoff from Binance's docs (through a search, since the docs
-site is blocked in the cloud container): each endpoint takes `symbol`,
-`period` (5m to 1d), `limit` (default 30, max 500) and `startTime`/
-`endTime`; only the latest 30 days are kept; since August 2026
-`globalLongShortAccountRatio` and `topLongShortPositionRatio` take an
-optional `contractType`, and without it return all contract types
-combined. Left for the build: the exact request weights and rate limit
-(one page states 1000 requests per 5 minutes per IP), and whether to pass
-`contractType=PERPETUAL`.
+**Kickoff decisions** (made 2026-11-27, inside Phase 4's decision 4):
+
+1. **The perpetual only.** Every ratio is the USDⓈ-M perpetual's
+   (`contractType=PERPETUAL` wherever an endpoint takes one), never the
+   perpetual and the quarterlies combined.
+
+**What Binance's docs say** (read through searches: the docs site is
+blocked in the cloud container): each endpoint takes `period` (5m to 1d),
+`limit` (default 30, max 500) and `startTime`/`endTime`, and keeps only the
+latest 30 days; they share an IP limit of 1000 requests per 5 minutes. The
+change log's August 2026 entry gives `globalLongShortAccountRatio`,
+`topLongShortAccountRatio` and `topLongShortPositionRatio` an optional
+`contractType` (PERPETUAL, CURRENT_QUARTER, NEXT_QUARTER; without it, all
+contract types combined), three endpoints rather than the two the kickoff
+search found, and renames `topLongShortAccountRatio`'s `symbol` to `pair`.
+`takerlongshortRatio` takes the contract's own symbol. Each row's
+`timestamp` is taken as its period's start, as klines' open time is.
+
+**Choices made at kickoff** (inside the decisions; easy to change):
+
+- **The request's shape is checked, not assumed.** Search summaries can't
+  be read as the docs, so each endpoint has its parameter shapes in order
+  of likelihood (`symbol` or `pair`, with `contractType=PERPETUAL`), and
+  the first request falls through to the next shape when Binance refuses
+  a parameter (a -11xx error), logging the one that worked. The last
+  resort is `symbol` alone, only reached when Binance takes no
+  `contractType` at all, where a symbol is one contract: still the
+  perpetual. No shape ever leaves `contractType` off where it's accepted.
+- **Stored at 5 minutes, rolled up at read time**, epoch-aligned like the
+  candles: the account and position ratios take each bar's last period
+  (the ratio as of the bar's close, like a candle's close); the taker
+  ratio is the bar's buy volume over its sell volume. On 1m charts each
+  bar shows the 5-minute period it falls in.
+- **The poller is its own process** in `ingestion/` (`futures_main.py`),
+  so a Futures outage or ban never touches the trade stream, and it
+  resumes from its own topic: the newest period of each ratio already on
+  `market.futures.ratios`. With none there (the first start, or after the
+  topic's retention), it starts 30 days back, which is the backfill:
+  Binance keeps nothing older. A `--refetch-days` flag fetches again
+  whatever the topic holds, to restore an emptied table. One path into
+  Postgres: the backfill goes through the topic and the consumer too.
+- **The consumer reads the topic from its start** the first time
+  (`earliest`, unlike the trade consumers), commits after Postgres has a
+  batch (at-least-once; the upsert makes repeats harmless) and publishes
+  which periods changed, so a refetch of unchanged history pushes nothing.
+- **Live only**, like backtests: the replay has no Futures feed, and a
+  replayed chart shows live's ratios for its bars.
 
 ## Phase 5 — more markets
 
