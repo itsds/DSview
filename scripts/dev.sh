@@ -27,6 +27,10 @@
 # Replay button starts a replay, when it starts the replay's own Spark jobs
 # (their logs go to storage/data/replay/_logs/, not a window).
 #
+# The futures window polls Binance Futures' long/short ratios (Phase 4c);
+# its first-ever start fetches the 30 days Binance keeps, and every start
+# after resumes where it left off. The ratios window stores them.
+#
 # Each window loads the repo root's .env first, if there is one: that's
 # where the Telegram bot's token and chat id live (gitignored; copy
 # .env.example). Without them the telegram window just says what's missing.
@@ -47,7 +51,9 @@ STOP_GRACE_SECONDS=5
 # window name | working dir (relative to repo root) | command
 SERVICES=(
   "ingestion|ingestion|python main.py"
+  "futures|ingestion|python futures_main.py"
   "whales|streaming|python -m jobs.whale_detector"
+  "ratios|streaming|python -m jobs.futures_ratios"
   "telegram|alerts|python telegram_bot.py"
   "candles|streaming|python -m jobs.candle_aggregator"
   "indicators|streaming|python -m jobs.indicators"
