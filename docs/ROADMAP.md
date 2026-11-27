@@ -9,7 +9,7 @@ Keep it current: tick a task when its commit lands, update the phase table
 when a phase is merged, and change the matching node's `status` in
 `docs/architecture.html` as each stage is built.
 
-Last updated: 2026-11-26
+Last updated: 2026-11-27
 
 ## Where things stand
 
@@ -80,8 +80,8 @@ then confirmed on the laptop for what only the laptop has.
 | 3a | History backfill | M | Done |
 | 3b | Volume footprint | L | Done |
 | 4a | Replay | L | Done |
-| 4b | Backtest | M | In progress |
-| 4c | Long/short ratio | M | Not started |
+| 4b | Backtest | M | Done |
+| 4c | Long/short ratio | M | In progress |
 | 5 | More markets | L | Not started |
 | 6 | Production readiness | L | Not started |
 | 7 | Stretch and future | XL | Not started |
@@ -604,6 +604,46 @@ klines.
 
 ### Phase 4c — long/short ratio
 
+**Kickoff decisions** (made 2026-11-27, inside Phase 4's decision 4):
+
+1. **The perpetual only.** The three account and position ratios are
+   fetched with `contractType=PERPETUAL`; without it Binance combines the
+   perpetual with the quarterly contracts, a mix that shifts as
+   quarterlies expire. The taker buy/sell volume ratio takes no
+   `contractType`.
+2. **5-minute periods only, rolled up for bigger timeframes.** The
+   account and position ratios are snapshots, so a bigger bar shows the
+   last 5-minute value inside it; the taker ratio sums the bar's buy and
+   sell volume and divides. One table, and the history the poller keeps
+   past Binance's 30 days works on every timeframe. The 1m chart steps
+   every 5 minutes.
+3. **During a replay the panes show live's stored ratios for the bars the
+   replay has formed**, following it bar by bar without showing the
+   future. Nothing in the replay pipeline changes.
+4. **Each pane draws the ratio as one line**, like RSI, with the long and
+   short shares (or the taker's buy and sell volume) in its legend under
+   the crosshair.
+
+**Choices made at kickoff** (inside the decisions; easy to change):
+
+- **Rate limits are no constraint:** every `/futures/data/` endpoint has
+  request weight 0 and a limit of 1,000 requests per 5 minutes per IP.
+  Polling all four every 5 minutes is 4 requests; backfilling 30 days of
+  5-minute periods is about 72 (500 periods a page).
+- **The poller asks a few seconds after each 5-minute close** and again
+  until the closed period appears, and on start it pages from the newest
+  stored period, so a restart inside Binance's 30 days loses nothing.
+- **The backfill gets a ratios lane** next to its candles and aggTrades,
+  the same client, budget and 418/429 handling.
+- **Live only, like the backtests:** the poller refuses to run as the
+  replay pipeline, as ingestion does.
+- **Values reach the chart with the bars**, as Spark's EMAs do, so the
+  panes need no data path of their own during a replay or scroll-back.
+- **To check on the laptop**, since the cloud container can't reach
+  Binance Futures: whether a period's `timestamp` is its start or its end,
+  that `contractType=PERPETUAL` is accepted, and that a rolled-up 1h
+  equals Binance's own 1h period.
+
 - [ ] Futures poller and the `market.futures.ratios` topic.
 - [ ] Consumer: Postgres (a ratios table) and Redis.
 - [ ] Backfill: the latest 30 days of all four ratios.
@@ -615,15 +655,16 @@ klines.
 restarted poller fills in the periods it missed (inside Binance's 30
 days).
 
-Confirmed at kickoff from Binance's docs (through a search, since the docs
-site is blocked in the cloud container): each endpoint takes `symbol`,
-`period` (5m to 1d), `limit` (default 30, max 500) and `startTime`/
-`endTime`; only the latest 30 days are kept; since August 2026
-`globalLongShortAccountRatio` and `topLongShortPositionRatio` take an
-optional `contractType`, and without it return all contract types
-combined. Left for the build: the exact request weights and rate limit
-(one page states 1000 requests per 5 minutes per IP), and whether to pass
-`contractType=PERPETUAL`.
+Confirmed at Phase 4's kickoff from Binance's docs (through a search,
+since the docs site is blocked in the cloud container): each endpoint
+takes `symbol`, `period` (5m to 1d), `limit` (default 30, max 500) and
+`startTime`/`endTime`; only the latest 30 days are kept. Confirmed at
+4c's kickoff the same way: every one has request weight 0 and a limit of
+1,000 requests per 5 minutes per IP; Binance's changelog (August 2026)
+gives `globalLongShortAccountRatio`, `topLongShortPositionRatio` and
+`topLongShortAccountRatio` an optional `contractType` (`PERPETUAL`,
+`CURRENT_QUARTER`, `NEXT_QUARTER`; all combined without it), and
+`takerlongshortRatio` none.
 
 ## Phase 5 — more markets
 
