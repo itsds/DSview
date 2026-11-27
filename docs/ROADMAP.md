@@ -38,7 +38,10 @@ Backtests run a Python strategy from the command line over a year of
 Bronze's klines, on EMAs from Spark's own engine that equal the chart's on
 every bar; each run's trades and equity curve go to Postgres, and the
 Strategy Tester under the chart shows them, with the trades marked on the
-chart. All hardcoded
+chart. Binance Futures' four long/short ratios for the perpetual are
+polled every 5 minutes (a first start fetches the 30 days Binance keeps),
+stored in Postgres and shown as four indicators in panes of their own,
+live and on history. All hardcoded
 config lives in `config/settings.py`. `./scripts/test.sh` runs a pytest
 suite over real Kafka, Redis and Postgres plus the frontend's Vitest
 tests, and GitHub Actions runs it on every push.
@@ -604,12 +607,18 @@ klines.
 
 ### Phase 4c — long/short ratio
 
-- [ ] Futures poller and the `market.futures.ratios` topic.
-- [ ] Consumer: Postgres (a ratios table) and Redis.
-- [ ] Backfill: the latest 30 days of all four ratios.
-- [ ] Backend: REST history and live push.
-- [ ] Frontend: four indicators, each in its own pane.
-- [ ] `tests/fake_binance.py`: the four Futures endpoints.
+- [x] Futures poller and the `market.futures.ratios` topic:
+      `ingestion/futures_main.py`, `futures_poller.py`,
+      `binance_futures_rest.py`, `ratio_topic.py`; `FuturesRatio` in
+      `schema.py`.
+- [x] Consumer: Postgres (a ratios table) and Redis:
+      `streaming/jobs/futures_ratios.py`, `storage/ddl/futures_ratios.sql`.
+- [x] Backfill: the latest 30 days of all four ratios: the poller's first
+      start (and `--refetch-days`), through the topic and the consumer.
+- [x] Backend: REST history and live push: `backend/routers/futures_ratios.py`.
+- [x] Frontend: four indicators, each in its own pane:
+      `indicators/futuresRatios.js`, `hooks/useLiveFuturesRatios.js`.
+- [x] `tests/fake_binance.py`: the four Futures endpoints.
 
 **Done when:** all four ratios show live and on 30 days of history; a
 restarted poller fills in the periods it missed (inside Binance's 30
@@ -662,6 +671,56 @@ search found, and renames `topLongShortAccountRatio`'s `symbol` to `pair`.
   which periods changed, so a refetch of unchanged history pushes nothing.
 - **Live only**, like backtests: the replay has no Futures feed, and a
   replayed chart shows live's ratios for its bars.
+
+**Choices made while building** (inside the kickoff decisions; easy to
+change if you'd rather they went another way):
+
+- **The backfill is the poller's first start**, not a lane of
+  `backfill/history_backfill.py`: one fetcher and one path into Postgres
+  for every period, and nothing to forget to run while Binance's 30 days
+  run out. Restoring an emptied table is `futures_main.py
+  --refetch-days 30`.
+- **Each period is asked for 5 s after it closes**, then every 15 s until
+  Binance has it (a period still missing after 10 minutes is logged). How
+  soon Binance publishes a period is one of the things only the laptop
+  can show.
+- **The consumer publishes which periods changed, not their values**, and
+  the backend rolls the touched bars up again from Postgres for each
+  socket's timeframe (the newest 12 at most), so live and history come
+  from the one query. No Redis SET of the newest values: a bar the chart
+  shows is several periods rolled up.
+- **1m charts ask for 5m** and show each period on its five minutes; the
+  API refuses 1m with a message saying so.
+- **The legend shows a line's latest value off the chart** when the newest
+  bar has none: a ratio's period only arrives once it has closed, so the
+  bar in progress never has one.
+- **The fake Binance plays both sides of the August 2026 change**
+  (`futures_params`), and answers for every contract combined when an
+  endpoint takes a contractType but gets none, so a test can tell the
+  perpetual's values from the mix.
+
+Met in the cloud container, on a dev-style stack (Kafka, Redis, Postgres)
+against the fake Binance (`tests/fake_binance.py`), the real clock: the
+poller's first start fetched 30 days of all four ratios (8,639 periods
+each, 72 requests) in 2 s and the consumer stored them; each endpoint
+settled on its shape at once (global accounts and top positions by
+`symbol`, top accounts by `pair`, all with `contractType=PERPETUAL`; taker
+volume by `symbol`). Each period was asked for 5 s after it closed and
+reached the browser over the socket 14 ms after the poller had it (the
+17:00 period: published 17:05:05.021, stored .024, in the browser .035);
+the poller, stopped across two period closes and restarted, filled both in
+from the topic's tail and repeated nothing. `GET /futures-ratios` answers
+in 40–65 ms (1h, 4h and 1D over the whole 30 days; 5m over the 1000 bars a
+request allows). Chromium: all four indicators, each in its own pane
+(three from a saved list, the fourth from the Indicators dialog), the
+legend's latest values equal to the API's newest bar on 1m (its 5-minute
+period), 1h and 1D, scroll-back fetching each older page's ratios, the
+lines stopping where the 30 days begin, live periods landing on their bar,
+no page errors. The suite adds 70 Python tests and 17 Vitest tests; all
+393 and 100 pass. Left for the laptop: the same against Binance itself,
+which settles the one thing the docs couldn't (which parameter shape each
+endpoint takes; the poller logs it) and how soon after a close Binance
+publishes a period.
 
 ## Phase 5 — more markets
 
