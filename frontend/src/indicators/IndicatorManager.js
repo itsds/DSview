@@ -17,7 +17,8 @@
  * pushed in full: every point changed, not just the last.
  *
  * Server values come from `serverValues`, CandleChart.jsx's
- * server.js store, read afresh on every refresh.
+ * server.js store, read afresh on every refresh; Binance Futures' ratios
+ * from `ratioValues`, its futuresRatios.js store, the same way.
  *
  * Any change to the indicator list rebuilds every indicator series and pane
  * from scratch rather than diffing: there are only a handful, and it keeps
@@ -29,6 +30,7 @@
 import { HistogramSeries, LineSeries, LineStyle } from "lightweight-charts";
 
 import { INDICATORS, indicatorLabel, slotStyle } from "./definitions.js";
+import { ratioInput } from "./futuresRatios.js";
 import { createServerIndicatorStore, serverInput } from "./server.js";
 
 // An oscillator pane's height relative to the price pane's (stretch factor 1).
@@ -39,9 +41,10 @@ export class IndicatorManager {
    * `element` is the chart's container; pane positions are reported
    * relative to its top edge.
    */
-  constructor({ chart, candleSeries, volumeSeries, serverValues, theme, element, onValues, onLayout }) {
+  constructor({ chart, candleSeries, volumeSeries, serverValues, ratioValues, theme, element, onValues, onLayout }) {
     this._chart = chart;
     this._serverValues = serverValues ?? createServerIndicatorStore();
+    this._ratioValues = ratioValues ?? null;
     this._candleSeries = candleSeries;
     this._volumeSeries = volumeSeries;
     this._theme = theme;
@@ -72,6 +75,7 @@ export class IndicatorManager {
       bars,
       closes: bars.map((bar) => bar.close),
       volumes: bars.map((bar) => volumeByTime.get(bar.time) ?? 0),
+      ratios: ratioInput(this._ratioValues, bars),
     };
 
     const computed = this._built.map((built) => {
@@ -103,6 +107,8 @@ export class IndicatorManager {
         visible: built.indicator.visible,
         hasSettings: built.def.params.length > 0,
         fromServer: built.fromServer,
+        source: built.def.source ?? null,
+        precision: built.def.precision ?? 2,
         lines: built.def.lines.map((line) => ({
           key: line.key,
           label: line.label,
@@ -172,7 +178,7 @@ export class IndicatorManager {
       visible: indicator.visible,
       priceLineVisible: false,
       lastValueVisible: line.axisLabel !== false,
-      priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+      priceFormat: { type: "price", precision: def.precision ?? 2, minMove: 10 ** -(def.precision ?? 2) },
     };
     if (def.range) {
       // A fixed range (RSI's 0–100) keeps its levels in place instead of the scale hugging the data.

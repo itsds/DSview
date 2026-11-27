@@ -8,7 +8,8 @@
  * Values are in text colours; a short swatch in the line's colour (and
  * dash) beside each value says which line it is, so identity never rests
  * on coloured text. The name's tooltip says where the values came from:
- * Spark (streaming/jobs/indicators.py) or the browser (indicators/math.js). PaneLegend places the same rows at the top of an
+ * Spark (streaming/jobs/indicators.py), the browser (indicators/math.js),
+ * or for the long/short ratios, Binance Futures. PaneLegend places the same rows at the top of an
  * oscillator's own pane; Legend.jsx shows the over-the-candles ones.
  *
  * Author: @DS
@@ -18,14 +19,19 @@ import { Eye, EyeOff, Settings, X } from "lucide-react";
 
 import styles from "./IndicatorLegend.module.css";
 
-function formatValue(value) {
-  return value === null ? "—" : value.toFixed(2);
+function formatValue(value, precision = 2) {
+  return value === null ? "—" : value.toFixed(precision);
+}
+
+function sourceOf(row) {
+  if (row.source) return row.source;
+  return row.fromServer ? "Computed by Spark" : "Computed in the browser";
 }
 
 export function IndicatorLegendRow({ row, actions }) {
   return (
     <div className={row.visible ? styles.row : `${styles.row} ${styles.hidden}`}>
-      <span className={styles.name} title={row.fromServer ? "Computed by Spark" : "Computed in the browser"}>
+      <span className={styles.name} title={sourceOf(row)}>
         {row.label}
       </span>
       {row.visible &&
@@ -36,7 +42,7 @@ export function IndicatorLegendRow({ row, actions }) {
               style={{ borderTopColor: line.color, borderTopStyle: line.dashed ? "dashed" : "solid" }}
               aria-hidden="true"
             />
-            {formatValue(line.value)}
+            {formatValue(line.value, row.precision)}
           </span>
         ))}
       <span className={styles.actions}>

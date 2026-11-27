@@ -11,7 +11,13 @@
  * streaming/jobs/indicators.py, on every timeframe) whenever the server has
  * any for the loaded bars, and math.js's otherwise. Nothing that draws or
  * lists indicators knows which it got. Its input is { bars, closes,
- * volumes, server } — see IndicatorManager.js and server.js's serverInput().
+ * volumes, server, ratios } — see IndicatorManager.js, server.js's
+ * serverInput() and futuresRatios.js's ratioInput().
+ *
+ * Four indicators aren't computed at all: Binance Futures' long/short
+ * ratios (Phase 4c), each in its own pane, read per bar from `ratios`.
+ * They carry the ratio they show (`ratioKind`) and say where it comes from
+ * (`source`, the legend's tooltip).
  *
  * Colour: each instance keeps the colour slot it was given when added (see
  * useIndicators.js). Slots are theme.css's three validated series hues, then
@@ -23,6 +29,26 @@
 
 import { bollinger, ema, macd, rsi, sma, vwap } from "./math.js";
 import { serverColumn } from "./server.js";
+
+const FUTURES_SOURCE = "Binance Futures, the USDⓈ-M perpetual's 5-minute data";
+
+// One of Binance Futures' ratios, in its own pane, with a dashed line at 1
+// (as many longs as shorts, or as much buying as selling).
+function futuresRatio(ratioKind, name, shortName, description) {
+  return {
+    name,
+    shortName,
+    description,
+    pane: "own",
+    levels: [1],
+    precision: 3,
+    params: [],
+    ratioKind,
+    source: FUTURES_SOURCE,
+    lines: [{ key: "value", label: "Ratio", type: "line" }],
+    compute: ({ ratios }) => ({ value: ratios ? ratios.series(ratioKind) : [] }),
+  };
+}
 
 export const SERIES_HUES = 3; // theme.css --color-series-1..3
 export const MAX_PRICE_OVERLAYS = SERIES_HUES * 2;
@@ -111,7 +137,36 @@ export const INDICATORS = {
     ],
     compute: ({ closes }, { fast, slow, signal }) => macd(closes, fast, slow, signal),
   },
+  long_short_accounts: futuresRatio(
+    "global_accounts",
+    "Long/Short Ratio (Accounts)",
+    "L/S accounts",
+    "Binance Futures: accounts net long over accounts net short, across all of them. Above 1, more are long.",
+  ),
+  top_long_short_accounts: futuresRatio(
+    "top_accounts",
+    "Top Trader Long/Short Ratio (Accounts)",
+    "Top L/S accounts",
+    "Binance Futures: the same, among the top traders by margin balance.",
+  ),
+  top_long_short_positions: futuresRatio(
+    "top_positions",
+    "Top Trader Long/Short Ratio (Positions)",
+    "Top L/S positions",
+    "Binance Futures: the top traders' long positions over their short ones, by size.",
+  ),
+  taker_buy_sell: futuresRatio(
+    "taker_volume",
+    "Taker Buy/Sell Volume Ratio",
+    "Taker buy/sell",
+    "Binance Futures: volume bought by market orders over volume sold by them. Above 1, buyers are the aggressors.",
+  ),
 };
+
+/** True if any of `indicators` shows a Binance Futures ratio. */
+export function usesFuturesRatios(indicators) {
+  return indicators.some((indicator) => INDICATORS[indicator.type]?.ratioKind);
+}
 
 export function indicatorLabel({ type, params }) {
   const def = INDICATORS[type];
