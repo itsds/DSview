@@ -19,9 +19,9 @@ from decimal import Decimal
 from enum import Enum
 from typing import List, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from config.settings import PIPELINE, Pipeline
+from config.settings import FUTURES_RATIO_KINDS, PIPELINE, Pipeline
 
 
 class Exchange(str, Enum):
@@ -44,6 +44,7 @@ class EventType(str, Enum):
 
     TRADE = "trade"
     DEPTH = "depth"
+    FUTURES_RATIO = "futures_ratio"
 
 
 class _BaseEvent(BaseModel):
@@ -91,8 +92,47 @@ class DepthUpdate(_BaseEvent):
     asks: List[DepthLevel]
 
 
-# A single WebSocket message can yield zero, one, or more of these.
-MarketEvent = Union[TradeEvent, DepthUpdate]
+class FuturesRatio(_BaseEvent):
+    """
+    One period of one of Binance Futures' long/short ratios (Phase 4c), for
+    the USDⓈ-M perpetual of the symbol's name: polled over REST by
+    futures_poller.py rather than streamed, so no BaseExchangeClient.
+
+    `event_time` is the period's start (Binance's `timestamp`, read as a
+    kline's open time is) and `period` its length, "5m" (config/settings.py's
+    FUTURES_RATIO_PERIOD). `kind` is one of FUTURES_RATIO_KINDS:
+
+    - global_accounts, top_accounts, top_positions: `ratio` is longs over
+      shorts (Binance's longShortRatio), `long_value` and `short_value` the
+      shares long and short (0 to 1) of all accounts, of the top traders'
+      accounts, or of the top traders' positions;
+    - taker_volume: `ratio` is taker buy over sell volume (buySellRatio),
+      `long_value` and `short_value` that buy and sell volume, in the base
+      asset.
+
+    Numbers are Binance's own decimals, as strings on the wire like every
+    other event's.
+    """
+
+    event_type: EventType = EventType.FUTURES_RATIO
+    kind: str
+    period: str = "5m"
+    contract_type: str = "PERPETUAL"
+    ratio: Decimal
+    long_value: Decimal
+    short_value: Decimal
+
+    @field_validator("kind")
+    @classmethod
+    def _known_kind(cls, kind: str) -> str:
+        if kind not in FUTURES_RATIO_KINDS:
+            raise ValueError(f"unknown ratio {kind!r}: one of {list(FUTURES_RATIO_KINDS)}")
+        return kind
+
+
+# A single WebSocket message can yield zero, one, or more of these; a poll,
+# FuturesRatios.
+MarketEvent = Union[TradeEvent, DepthUpdate, FuturesRatio]
 
 
 def kafka_topic_for(event: MarketEvent, pipeline: Pipeline = PIPELINE) -> str:
@@ -110,5 +150,6 @@ def kafka_topic_for(event: MarketEvent, pipeline: Pipeline = PIPELINE) -> str:
     topic_map = {
         EventType.TRADE: pipeline.trades_topic,
         EventType.DEPTH: pipeline.depth_topic,
+        EventType.FUTURES_RATIO: pipeline.futures_ratios_topic,
     }
     return topic_map[EventType(event.event_type)]

@@ -9,9 +9,9 @@ from decimal import Decimal
 import pydantic
 import pytest
 
-from config.settings import DEPTH_TOPIC, TRADES_TOPIC
+from config.settings import DEPTH_TOPIC, FUTURES_RATIOS_TOPIC, REPLAY_PIPELINE, TRADES_TOPIC
 
-from schema import DepthLevel, DepthUpdate, Exchange, Side, TradeEvent, kafka_topic_for
+from schema import DepthLevel, DepthUpdate, Exchange, FuturesRatio, Side, TradeEvent, kafka_topic_for
 
 EVENT_TIME = datetime(2026, 11, 20, 10, 16, 57, 123000, tzinfo=timezone.utc)
 
@@ -68,3 +68,40 @@ def test_each_event_type_maps_to_its_topic():
     )
     assert kafka_topic_for(_trade()) == TRADES_TOPIC
     assert kafka_topic_for(depth) == DEPTH_TOPIC
+
+
+def _ratio(**overrides) -> FuturesRatio:
+    fields = dict(
+        exchange=Exchange.BINANCE,
+        symbol="BTCUSDT",
+        event_time=datetime(2026, 11, 20, 10, 15, tzinfo=timezone.utc),
+        kind="global_accounts",
+        ratio=Decimal("1.9234"),
+        long_value=Decimal("0.6579"),
+        short_value=Decimal("0.3421"),
+    )
+    fields.update(overrides)
+    return FuturesRatio(**fields)
+
+
+def test_a_futures_ratio_serializes_to_the_wire_shape_the_consumer_parses():
+    wire = json.loads(json.dumps(_ratio().model_dump(mode="json")))
+    assert {k: wire[k] for k in ("event_type", "symbol", "event_time", "kind", "period", "contract_type")} == {
+        "event_type": "futures_ratio",
+        "symbol": "BTCUSDT",
+        "event_time": "2026-11-20T10:15:00Z",
+        "kind": "global_accounts",
+        "period": "5m",
+        "contract_type": "PERPETUAL",
+    }
+    assert (wire["ratio"], wire["long_value"], wire["short_value"]) == ("1.9234", "0.6579", "0.3421")
+
+
+def test_a_futures_ratio_of_an_unknown_kind_is_refused():
+    with pytest.raises(pydantic.ValidationError, match="unknown ratio"):
+        _ratio(kind="funding_rate")
+
+
+def test_futures_ratios_go_to_their_own_topic():
+    assert kafka_topic_for(_ratio()) == FUTURES_RATIOS_TOPIC == "market.futures.ratios"
+    assert kafka_topic_for(_ratio(), REPLAY_PIPELINE) == "replay.market.futures.ratios"

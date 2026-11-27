@@ -21,6 +21,7 @@ def test_live_keeps_every_name_dsview_had_before_replay():
         "alerts.whales",
         "market.candles.1m",
     )
+    assert live.futures_ratios_topic == "market.futures.ratios"
     assert live.consumer_group("dsview-whale-detector") == "dsview-whale-detector"
     assert live.redis_prefix == ""
     assert live.postgres_schema == "public"
