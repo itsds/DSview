@@ -1,6 +1,6 @@
 """
-Bronze written by hand for the replay tests: the way the live pipeline and
-the backfill write it, in a temporary data root.
+Bronze written by hand for the replay and backtest tests: the way the live
+pipeline and the backfill write it, in a temporary data root.
 
 `SinkWriter` writes a Spark file sink's layout by hand: Parquet files with
 INT96 timestamps (what Spark writes; no statistics), and the sink's log in
@@ -107,20 +107,32 @@ def at(seconds: float) -> datetime:
     return T0 + timedelta(seconds=seconds)
 
 
+DAY_MS = 86_400_000
+
+
+def _days(start_ms: int, end_ms: int) -> Iterable[Tuple[str, int, int]]:
+    """(UTC day, its part of [start_ms, end_ms)) for every day the span touches."""
+    day_start = start_ms // DAY_MS * DAY_MS
+    while day_start < end_ms:
+        day = datetime.fromtimestamp(day_start / 1000, timezone.utc).date().isoformat()
+        yield day, max(start_ms, day_start), min(end_ms, day_start + DAY_MS)
+        day_start += DAY_MS
+
+
 def write_agg_trades(data_root: Path, symbol: str, start_ms: int, end_ms: int, market=None) -> List[dict]:
     """SyntheticMarket's aggTrades in [start_ms, end_ms) as the backfill writes them (bronze_files.py); returns them."""
-    from bronze_files import AGG_TRADES, page_table
+    from bronze_files import AGG_TRADES, day_writer, page_table
     from fake_binance import SyntheticMarket
 
     from binance_rest import AGG_TRADE_COLUMNS
 
     market = market or SyntheticMarket()
-    trades = list(market.trades_between(symbol, start_ms, end_ms))
-    by_day: Dict[str, List[dict]] = {}
-    for trade in trades:
-        day = datetime.fromtimestamp(trade["T"] / 1000, timezone.utc).date().isoformat()
-        by_day.setdefault(day, []).append(trade)
-    for day, day_trades in by_day.items():
+    trades = []
+    for day, lo, hi in _days(start_ms, end_ms):
+        day_trades = list(market.trades_between(symbol, lo, hi))
+        if not day_trades:
+            continue
+        trades.extend(day_trades)
         page = {column: [] for column in AGG_TRADE_COLUMNS}
         for t in day_trades:
             page["agg_trade_id"].append(t["a"])
@@ -132,7 +144,31 @@ def write_agg_trades(data_root: Path, symbol: str, start_ms: int, end_ms: int, m
             page["last_trade_id"].append(t["l"])
             page["is_best_match"].append(t["M"])
             page["ingested_at"].append(t["T"])
-        path = data_root / "bronze" / "agg_trades" / f"symbol={symbol}" / f"date={day}" / "agg_trades.parquet"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(page_table(AGG_TRADES, page), path)
+        with day_writer(str(data_root), AGG_TRADES, symbol, datetime.fromisoformat(day).date(), lo, hi) as writer:
+            writer.write(page_table(AGG_TRADES, page))
     return trades
+
+
+def write_klines(data_root: Path, symbol: str, start_ms: int, end_ms: int, market=None) -> List[pa.Table]:
+    """SyntheticMarket's 1m klines in [start_ms, end_ms) as the backfill writes them (bronze_files.py); each day's table."""
+    from bronze_files import KLINES, day_writer, page_table
+    from fake_binance import SyntheticMarket
+
+    from binance_rest import KLINE_COLUMNS
+
+    market = market or SyntheticMarket()
+    tables = []
+    for day, lo, hi in _days(start_ms, end_ms):
+        page = {column: [] for column in KLINE_COLUMNS}
+        for row in market.klines_between(symbol, lo, hi):
+            for column, value in zip(
+                ("window_start", "open", "high", "low", "close", "volume", "quote_volume", "trade_count",
+                 "taker_buy_volume", "taker_buy_quote_volume", "ingested_at"),
+                (row[0], row[1], row[2], row[3], row[4], row[5], row[7], row[8], row[9], row[10], row[0]),
+            ):
+                page[column].append(value)
+        table = page_table(KLINES, page)
+        with day_writer(str(data_root), KLINES, symbol, datetime.fromisoformat(day).date(), lo, hi) as writer:
+            writer.write(table)
+        tables.append(table)
+    return tables

@@ -33,6 +33,11 @@
  * hand. `pipeline` is whose data every fetch and live socket asks for:
  * live's, or a replay's (lib/pipelines.js, Phase 4a).
  *
+ * `backtestTrades` are the picked backtest run's trades (Phase 4b), marked
+ * on the candles by backtest/BacktestMarkers.js on whatever timeframe the
+ * chart shows, and kept to the bars loaded as scroll-back adds more; null
+ * for none.
+ *
  * With `onPickReplayStart` set, the chart is choosing where a replay starts:
  * the next click on a bar hands that bar's time to it (App.jsx then starts
  * the replay), with a note over the chart saying so.
@@ -47,6 +52,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { CandlestickSeries, HistogramSeries, createChart } from "lightweight-charts";
 
 import { HISTORY_PAGE_SIZE, fetchCandles } from "../../api/candles.js";
+import { BacktestMarkers } from "../../backtest/BacktestMarkers.js";
 import { DrawingController } from "../../drawing/DrawingController.js";
 import { FootprintManager } from "../../footprint/FootprintManager.js";
 import { FOOTPRINT_TIMEFRAMES } from "../../footprint/levels.js";
@@ -117,6 +123,7 @@ export default function CandleChart({
   footprintRows,
   pipeline = LIVE,
   onPickReplayStart = null,
+  backtestTrades = null,
 }) {
   const theme = useMemo(readChartTheme, []);
   const wrapperRef = useRef(null);
@@ -128,6 +135,7 @@ export default function CandleChart({
   const indicatorsRef = useRef(null);
   const serverValuesRef = useRef(null);
   const footprintRef = useRef(null);
+  const backtestMarkersRef = useRef(null);
   const lastBarTimeRef = useRef(null);
   const historyLoadedRef = useRef(false);
   const loadingOlderRef = useRef(false);
@@ -194,6 +202,8 @@ export default function CandleChart({
       ? new FootprintManager({ chart, candleSeries, symbol, timeframe, theme, pipeline, onStatus: setFootprintStatus })
       : null;
 
+    const backtestMarkers = new BacktestMarkers({ candleSeries, barSeconds: timeframeSeconds(timeframe), theme });
+
     let disposed = false;
 
     // Prepends the page before the oldest loaded bar. Merges with
@@ -221,6 +231,7 @@ export default function CandleChart({
         candleSeries.setData([...page.map(toChartBar), ...candleSeries.data()]);
         volumeSeries.setData([...page.map((c) => toVolumeBar(c, theme)), ...volumeSeries.data()]);
         indicatorManager.refresh({ full: true });
+        backtestMarkers.refresh();
       } catch (error) {
         console.error("Loading older candles failed:", error);
       } finally {
@@ -239,12 +250,14 @@ export default function CandleChart({
     indicatorsRef.current = indicatorManager;
     serverValuesRef.current = serverValues;
     footprintRef.current = footprint;
+    backtestMarkersRef.current = backtestMarkers;
 
     return () => {
       disposed = true;
       drawings.destroy();
       indicatorManager.destroy();
       footprint?.destroy();
+      backtestMarkers.destroy();
       chart.remove();
     };
   }, [theme, symbol, timeframe, drawingStore, onToolChange, pipeline]);
@@ -260,6 +273,10 @@ export default function CandleChart({
   useEffect(() => {
     indicatorsRef.current.setIndicators(indicators);
   }, [indicators]);
+
+  useEffect(() => {
+    backtestMarkersRef.current.setTrades(backtestTrades);
+  }, [backtestTrades]);
 
   const showsFootprint = chartType === "footprint" && footprintAvailable;
   useEffect(() => {
@@ -308,6 +325,7 @@ export default function CandleChart({
     // A short first page is all the history there is.
     reachedStartRef.current = history.length < HISTORY_PAGE_SIZE;
     indicatorsRef.current.refresh({ full: true });
+    backtestMarkersRef.current.refresh();
   }, [history, theme]);
 
   useEffect(() => {

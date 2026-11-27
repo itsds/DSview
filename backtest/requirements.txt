@@ -1,0 +1,7 @@
+# backtest/ reuses backfill/'s Bronze layout and footprint bucketing
+# (bronze_files.py imports binance_rest.py, hence httpx) and streaming/'s
+# IndicatorEngine (plain Python: no Spark needed to backtest).
+-r ../backfill/requirements.txt
+psycopg[binary]>=3.1,<4.0
+# Bronze's Parquet files. The same range streaming/requirements.txt pins for Spark.
+pyarrow>=14,<20

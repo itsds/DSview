@@ -15,7 +15,9 @@ candle_indicators and joined onto each rolled-up candle by its start.
 The footprint (FootprintReader) works the same way: footprint_1m holds
 $1 levels per minute, and each request merges them into its row size and
 timeframe (_FOOTPRINT_SQL), or sums a time range into a volume profile
-(_PROFILE_SQL).
+(_PROFILE_SQL). Backtest results (BacktestReader, Phase 4b) are read as
+backtest/backtest_store.py wrote them, the equity curve thinned for the
+chart (_EQUITY_SQL).
 
 Author: @DS
 """
@@ -254,6 +256,88 @@ class FootprintReader:
             "first_minute": first,
             "last_minute": last,
             "levels": [[price, buy, sell] for _, price, buy, sell in levels],
+        }
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+# Backtest results (Phase 4b; storage/ddl/backtests.sql, written by
+# backtest/backtest_store.py). Live's schema only: every reader below takes
+# live's DSN. Money arrives as plain decimal strings (trim_scale: the
+# runs keep 28 significant digits), times as bar starts.
+_RUN_COLUMNS = """
+    run_id, created_at, symbol, strategy, params, timeframe, first_bar, last_bar,
+    trim_scale(initial_capital)::text AS initial_capital, trim_scale(fee_rate)::text AS fee_rate,
+    stats, spark_check, same_as_run
+"""
+
+_TRADES_SQL = """
+    SELECT trade_no, side, entry_time, trim_scale(entry_price)::text AS entry_price,
+           exit_time, trim_scale(exit_price)::text AS exit_price, trim_scale(quantity)::text AS quantity,
+           trim_scale(fees)::text AS fees, trim_scale(pnl)::text AS pnl,
+           trim_scale(return_pct)::text AS return_pct, bars, closed_by_end
+    FROM backtest_trades
+    WHERE run_id = %(run_id)s
+    ORDER BY trade_no
+"""
+
+# The equity curve, thinned to about `max_points` points when it has more
+# (a year of 1m bars is 525,600): the points split into max_points / 2
+# runs of consecutive bars, and each run keeps its lowest and highest
+# point, so every trough and peak the full curve has (the max drawdown
+# included) survives. The first and last points always stay.
+_EQUITY_SQL = """
+    WITH points AS (
+        SELECT window_start, equity,
+               row_number() OVER (ORDER BY window_start) - 1 AS i,
+               count(*) OVER () AS n
+        FROM backtest_equity
+        WHERE run_id = %(run_id)s
+    ), ranked AS (
+        SELECT window_start, equity, i, n,
+               row_number() OVER (PARTITION BY i * %(runs)s / n ORDER BY equity, window_start) AS low,
+               row_number() OVER (PARTITION BY i * %(runs)s / n ORDER BY equity DESC, window_start) AS high
+        FROM points
+    )
+    SELECT window_start, trim_scale(equity)::text AS equity, n
+    FROM ranked
+    WHERE n <= %(max_points)s OR low = 1 OR high = 1 OR i = 0 OR i = n - 1
+    ORDER BY window_start
+"""
+
+
+class BacktestReader:
+    """Reads backtest runs, their trades and equity curves."""
+
+    def __init__(self, dsn: str = POSTGRES_DSN) -> None:
+        self._conn = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
+
+    def list_runs(self, symbol: str, limit: int) -> list[dict[str, Any]]:
+        """`symbol`'s newest `limit` runs, newest first, each with its stats."""
+        return self._conn.execute(
+            f"SELECT {_RUN_COLUMNS} FROM backtest_runs WHERE symbol = %s ORDER BY run_id DESC LIMIT %s",
+            (symbol, limit),
+        ).fetchall()
+
+    def get_run(self, run_id: int) -> dict[str, Any] | None:
+        """One run with its trades (oldest first), or None if there's no such run."""
+        run = self._conn.execute(f"SELECT {_RUN_COLUMNS} FROM backtest_runs WHERE run_id = %s", (run_id,)).fetchone()
+        if run is not None:
+            run["trades"] = self._conn.execute(_TRADES_SQL, {"run_id": run_id}).fetchall()
+        return run
+
+    def run_exists(self, run_id: int) -> bool:
+        return self._conn.execute("SELECT 1 FROM backtest_runs WHERE run_id = %s", (run_id,)).fetchone() is not None
+
+    def get_equity(self, run_id: int, max_points: int) -> dict[str, Any]:
+        """{"points": [[bar start, equity], ...] oldest first, "total": points in the full curve}."""
+        rows = self._conn.execute(
+            _EQUITY_SQL, {"run_id": run_id, "runs": max(1, max_points // 2), "max_points": max_points}
+        ).fetchall()
+        return {
+            "points": [[row["window_start"], row["equity"]] for row in rows],
+            "total": rows[0]["n"] if rows else 0,
         }
 
     def close(self) -> None:

@@ -12,7 +12,9 @@
  * chart's own fetches and sockets included, follow the replay's feed
  * instead of live's (lib/pipelines.js): useReplay.js polls the replay
  * service, the top bar's Replay button picks the bar to start from, and
- * ReplayBar.jsx steers it. Drawings live in a per-symbol
+ * ReplayBar.jsx steers it. The bottom bar opens the Strategy Tester
+ * (Phase 4b) under the chart: backtest runs from useBacktests.js, the
+ * picked run's trades marked on the chart while it's open. Drawings live in a per-symbol
  * drawing store and indicators in useIndicators.js, both outliving chart
  * remounts, so they survive timeframe switches. The chart sits in an
  * ErrorBoundary so a chart error can't blank the whole page. Symbol
@@ -25,6 +27,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import styles from "./App.module.css";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
+import StrategyTester from "./components/backtest/StrategyTester.jsx";
 import CandleChart from "./components/chart/CandleChart.jsx";
 import IndicatorSettingsDialog from "./components/indicators/IndicatorSettingsDialog.jsx";
 import IndicatorsDialog from "./components/indicators/IndicatorsDialog.jsx";
@@ -35,6 +38,7 @@ import TopBar from "./components/layout/TopBar.jsx";
 import ReplayBar from "./components/replay/ReplayBar.jsx";
 import { createDrawingStore } from "./drawing/drawingStore.js";
 import { CROSSHAIR_TOOL } from "./drawing/tools.js";
+import { useBacktests } from "./hooks/useBacktests.js";
 import { useCandleHistory } from "./hooks/useCandleHistory.js";
 import { useChartSettings } from "./hooks/useChartSettings.js";
 import { useIndicators } from "./hooks/useIndicators.js";
@@ -46,6 +50,15 @@ import { REPLAY, feedFor, replayActive } from "./lib/pipelines.js";
 
 const SYMBOL = "BTCUSDT";
 const DEFAULT_TIMEFRAME = "1m";
+const TESTER_KEY = "dsview.strategyTesterOpen";
+
+function savedTesterOpen() {
+  try {
+    return localStorage.getItem(TESTER_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
 
 export default function App() {
   const [timeframe, setTimeframe] = useState(DEFAULT_TIMEFRAME);
@@ -63,6 +76,17 @@ export default function App() {
   const minuteCandle = useLiveCandles(SYMBOL, feed);
   const candle = useTimeframeCandle(SYMBOL, timeframe, minuteCandle, feed);
   const whales = useWhaleTrades(feed);
+  const [testerOpen, setTesterOpen] = useState(savedTesterOpen);
+  const backtests = useBacktests(SYMBOL, testerOpen);
+  const backtestTrades = testerOpen && backtests.showTrades ? backtests.trades : null;
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TESTER_KEY, String(testerOpen));
+    } catch {
+      // Storage blocked: the panel just won't reopen after a reload.
+    }
+  }, [testerOpen]);
 
   // The chart hands the clicked bar's time here while a start is being picked.
   const startReplayRef = useRef(replay.start);
@@ -98,7 +122,7 @@ export default function App() {
   };
 
   return (
-    <div className={styles.app}>
+    <div className={testerOpen ? `${styles.app} ${styles.withTester}` : styles.app}>
       <div className={styles.top}>
         <TopBar
           symbol={SYMBOL}
@@ -141,6 +165,7 @@ export default function App() {
             footprintRows={chartSettings.footprintRows}
             pipeline={feed.pipeline}
             onPickReplayStart={pickingReplayStart ? pickReplayStart : null}
+            backtestTrades={backtestTrades}
           />
         </ErrorBoundary>
         {replayActive(replay.status) && (
@@ -168,8 +193,15 @@ export default function App() {
           replaying={feed.pipeline === REPLAY}
         />
       </div>
+      {testerOpen && (
+        <div className={styles.tester}>
+          <ErrorBoundary name="Strategy Tester">
+            <StrategyTester backtests={backtests} onClose={() => setTesterOpen(false)} />
+          </ErrorBoundary>
+        </div>
+      )}
       <div className={styles.bottom}>
-        <BottomBar />
+        <BottomBar testerOpen={testerOpen} onTesterToggle={() => setTesterOpen((open) => !open)} />
       </div>
       {pickerOpen && (
         <IndicatorsDialog onAdd={indicators.add} canAdd={indicators.canAdd} onClose={() => setPickerOpen(false)} />

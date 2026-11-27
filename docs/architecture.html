@@ -296,7 +296,7 @@
           <dt>Grain</dt><dd>One row per trade, exactly as parsed; the backfill's, one per kline or aggregate trade, every column Binance gives</dd>
           <dt>Write</dt><dd>Append, every micro-batch; the backfill replaces a whole symbol-day file at a time, and never writes into the live dataset (its readers list files from Spark's own log)</dd>
           <dt>Promise</dt><dd>Immutable and replayable — the only place a trade survives in full. aggTrades are a different id series from live trades: never sum the two</dd>
-          <dt>Read by</dt><dd>The footprint's history (<code>agg_trades</code> → <code>footprint_1m</code>); <code>candles_1m</code> reloads from <code>klines_1m</code>; replay (<code>trades</code> through Spark's log, or <code>agg_trades</code>); backtests <span class="badge planned">roadmap</span></dd>
+          <dt>Read by</dt><dd>The footprint's history (<code>agg_trades</code> → <code>footprint_1m</code>); <code>candles_1m</code> reloads from <code>klines_1m</code>; replay (<code>trades</code> through Spark's log, or <code>agg_trades</code>); backtests (<code>klines_1m</code>, and <code>agg_trades</code> for the footprint)</dd>
         </dl>
       </div>
       <div class="layer" style="--edge:#868e96">
@@ -306,7 +306,7 @@
           <dt>Grain</dt><dd>One row per <code>trade_id</code></dd>
           <dt>Write</dt><dd>Append, after a 10-second watermark</dd>
           <dt>Promise</dt><dd>No duplicate trade survives a producer retry or a consumer restart</dd>
-          <dt>Read by</dt><dd>Backtests, future footprint rebuilds</dd>
+          <dt>Read by</dt><dd>Future footprint rebuilds</dd>
         </dl>
       </div>
       <div class="layer" style="--edge:#f08c00">
@@ -316,7 +316,7 @@
           <dt>Grain</dt><dd>One row per symbol per finished minute; per final bar and timeframe (indicators); per price level per finished minute (footprint)</dd>
           <dt>Write</dt><dd>Append mode — a window is emitted once, when its watermark passes</dd>
           <dt>Promise</dt><dd>Final numbers, never revised. Update mode would pile up one row per refinement</dd>
-          <dt>Read by</dt><dd>Backtests, forecasting, and a Postgres re-sync <span class="badge suggested">my idea</span></dd>
+          <dt>Read by</dt><dd>Forecasting, and a Postgres re-sync <span class="badge suggested">my idea</span></dd>
         </dl>
       </div>
     </div>
@@ -665,17 +665,33 @@ NODES.push(
   { id: "l_gold_ind", col: "store", lane: "medallion", dx: 530, w: 230, kind: "box", color: C.gold, status: "built", flows: ["medallion"],
     title: "gold/indicators", lines: ["EMA 20 · 50 · 200 per final bar", "by symbol and timeframe"],
     code: "storage/data/gold/indicators/",
-    what: "The backtests' copy of the indicators, computed from Gold's own candles rather than the live stream." },
-  { id: "j_backtest", col: "serve", lane: "medallion", kind: "box", color: C.serve, status: "planned", tag: "step 4", flows: ["medallion"],
-    title: "Backtest", lines: ["strategies over Silver trades", "and Gold candles"],
-    code: "scripts/backtest.py (planned)",
-    what: "Reads the lake directly rather than the serving stores, so a run can never be shaped by what the cache happens to hold." },
+    what: "Gold derived from Gold: each final bar's EMAs, written once, from Gold's own candles rather than the live stream. Backtests compute their own from Bronze's year of klines, since Gold only holds what the live stream finalized." },
+  { id: "j_backtest", col: "serve", lane: "medallion", kind: "box", color: C.serve, status: "built", tag: "step 4", flows: ["medallion"],
+    title: "Backtest", lines: ["strategies in Python, on_bar()", "a year of Bronze's klines", "EMAs from Spark's own engine"],
+    code: "backtest/run_backtest.py",
+    what: "Phase 4b. Reads the lake rather than the serving stores, so a run can never be shaped by what a cache happens to hold. Plain Python, no Spark: the klines rolled up into the chart's bars, IndicatorEngine fed from the oldest minute so every EMA equals Spark's (checked bar by bar against candle_indicators), fills at the next bar's open with 0.1% a side." },
+  { id: "tb_bt", col: "serve", lane: "medallion", kind: "box", color: C.serve, status: "built", tag: "step 4", flows: ["medallion"],
+    title: "backtest_runs", lines: ["+ backtest_trades, backtest_equity", "every run kept, live's schema", "a digest names an identical run"],
+    code: "storage/ddl/backtests.sql · backtest/backtest_store.py",
+    what: "Postgres, next to the chart's other history. Every run is kept: a rerun is a new run, and its digest of the trades and equity curve says whether it came out the same as an earlier one." },
   { id: "j_sync", col: "serve", lane: "medallion", kind: "box", color: C.serve, status: "suggested", flows: ["medallion","hot"],
     title: "Gold → Postgres sync", lines: ["finalized candles overwrite", "the hot path's rows", "and fill any gap it missed"],
     what: "My suggestion. Both writers start from the latest offset, so anything produced while the aggregator was down is missing from Postgres but present in Gold. A periodic upsert from Gold closes that hole and needs no new infrastructure." },
+  { id: "r_backtests", col: "api", lane: "medallion", kind: "box", color: C.api, status: "built", tag: "step 4", flows: ["medallion"],
+    title: "GET /backtests", lines: ["runs, newest first · a run's trades", "its equity curve, thinned", "keeping every trough and peak"],
+    code: "backend/routers/backtests.py · backend/postgres_client.py",
+    what: "Live only: backtests read live's lake, so there is no ?pipeline=. A year of 1m bars is 525,600 equity points; the curve comes back as each stretch's lowest and highest point, about 2,000 in all, so the max drawdown survives the thinning." },
   { id: "n_ai", col: "api", lane: "medallion", kind: "box", color: C.api, status: "planned", tag: "future", flows: ["medallion"],
     title: "AI layer", lines: ["Kronos-style forecast on Gold candles", "FinBERT / CryptoBERT on news text", "open-source models, served locally"],
     what: "A later phase, not planned in detail. It reads Gold rather than the live stream, because a forecast wants finalized candles." },
+  { id: "h_backtests", col: "client", lane: "medallion", kind: "box", color: C.client, status: "built", tag: "step 4", flows: ["medallion"],
+    title: "useBacktests", lines: ["polls the runs while open", "remembers the picked run"],
+    code: "frontend/src/hooks/useBacktests.js · frontend/src/api/backtests.js",
+    what: "Runs are stored from the command line, so the list is fetched again every 15 s while the panel is open. A stored run never changes: its trades and curve are fetched once." },
+  { id: "c_tester", col: "ui", lane: "medallion", kind: "box", color: C.ui, status: "built", tag: "step 4", flows: ["medallion"],
+    title: "Strategy Tester", lines: ["under the chart: stats, equity, trades", "trade markers on every timeframe"],
+    code: "frontend/src/components/backtest/ · frontend/src/backtest/",
+    what: "Each fill is marked on the bar of the chart's timeframe that holds it, and only on bars the chart has loaded: lightweight-charts would pile any other marker onto the oldest bar." },
   { id: "c_forecast", col: "ui", lane: "medallion", kind: "box", color: C.ui, status: "planned", tag: "future", flows: ["medallion"],
     title: "Forecast & sentiment overlay", lines: ["drawn over the same candles"],
     what: "Another series on the existing chart rather than a separate screen." },
@@ -860,8 +876,18 @@ const EDGES = [
     label: "commands", what: "start, pause, resume, speed, stop; the service's status back", how: "Redis list + key", when: "per click on the replay bar" },
   { from: "j_replay", to: "t_replay", group: "medallion", status: "built", flows: ["medallion"], route: "corridor", track: 0,
     label: "re-publish at chosen speed", what: "The same trades, on the replay's own clock, into the replay pipeline's topic", how: "Kafka produce (MarketDataProducer.send_batch)", when: "during a replay run" },
-  { from: "l_silver", to: "j_backtest", group: "medallion", status: "planned", flows: ["medallion"], route: "downCorridor", track: 4, what: "Deduped trades", how: "Parquet read", when: "per backtest" },
-  { from: "l_gold", to: "j_backtest", group: "medallion", status: "planned", flows: ["medallion"], label: "candles", what: "Finalized candles", how: "Parquet read", when: "per backtest" },
+  { from: "l_bronze", to: "j_backtest", group: "medallion", status: "built", flows: ["medallion"], route: "over", track: 2,
+    label: "klines + aggTrades", what: "Every traded 1m kline of the symbol, a year of them; aggTrades for a strategy that reads the footprint", how: "Parquet read (pyarrow)", when: "per backtest" },
+  { from: "tb_ind", to: "j_backtest", group: "medallion", status: "built", flows: ["medallion"], route: "leftUp",
+    label: "Spark's EMAs", what: "Every bar's EMA 20, 50 and 200, compared bit for bit with the backtest's own", how: "SELECT", when: "per backtest" },
+  { from: "j_backtest", to: "tb_bt", group: "medallion", status: "built", flows: ["medallion"],
+    label: "every run", what: "The run with its stats, its trades and its equity curve marked at every bar's close", how: "INSERT + COPY, one transaction", when: "per backtest" },
+  { from: "tb_bt", to: "r_backtests", group: "medallion", status: "built", flows: ["medallion"],
+    label: "runs, trades, curve", what: "Runs newest first; a run's trades; its curve thinned to about 2,000 points", how: "SELECT (window functions thin the curve)", when: "per request" },
+  { from: "r_backtests", to: "h_backtests", group: "medallion", status: "built", flows: ["medallion"],
+    label: "REST", what: "The runs, then the picked run's trades and equity curve", how: "fetch, the list every 15 s while the panel is open", when: "while the panel is open" },
+  { from: "h_backtests", to: "c_tester", group: "medallion", status: "built", flows: ["medallion"],
+    label: "the picked run", what: "Stats, curve and trades; the trades as markers on the chart", how: "props", when: "on a new run or pick" },
   { from: "l_gold", to: "j_sync", group: "medallion", status: "suggested", flows: ["medallion","hot"],
     label: "finalized candles", what: "Gold rows for a time range", how: "Parquet read", when: "on a schedule" },
   { from: "j_sync", to: "tb_candles", group: "medallion", status: "suggested", flows: ["medallion","hot"], route: "leftUp",

@@ -31,6 +31,22 @@
   border-radius: var(--radius-panel);
 }
 
+/* The Strategy Tester open under the chart (Phase 4b). */
+.withTester {
+  grid-template-rows: 44px minmax(0, 1fr) minmax(0, 300px) 36px;
+  grid-template-areas:
+    "top   top    top"
+    "tools chart  panel"
+    "tools tester panel"
+    "tools bottom panel";
+}
+
+.tester {
+  grid-area: tester;
+  min-width: 0;
+  min-height: 0;
+}
+
 .panel {
   grid-area: panel;
   min-height: 0;
@@ -48,6 +64,14 @@
     grid-template-areas:
       "top   top"
       "tools chart"
+      "tools bottom";
+  }
+
+  .withTester {
+    grid-template-areas:
+      "top   top"
+      "tools chart"
+      "tools tester"
       "tools bottom";
   }
 
