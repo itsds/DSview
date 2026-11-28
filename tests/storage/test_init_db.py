@@ -107,3 +107,30 @@ def test_init_db_gives_the_replay_pipeline_the_same_tables_in_its_own_schema(pg,
         )
     assert pg.execute("SELECT count(*) AS n FROM candles_1m WHERE symbol = %s", (symbol,)).fetchone()["n"] == 0
     assert pg.execute("SELECT count(*) AS n FROM replay.candles_1m WHERE symbol = %s", (symbol,)).fetchone()["n"] == 1
+
+
+def test_init_db_creates_futures_ratios_in_lives_schema_only(pg):
+    columns = {
+        row["column_name"]: row["data_type"]
+        for row in pg.execute(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'futures_ratios'"
+        )
+    }
+    assert columns == {
+        "symbol": "character varying",
+        "period_start": "timestamp with time zone",
+        "kind": "character varying",
+        "ratio": "numeric",
+        "long_value": "numeric",
+        "short_value": "numeric",
+    }
+    [primary_key] = pg.execute(
+        """
+        SELECT array_agg(a.attname ORDER BY array_position(i.indkey, a.attnum)) AS columns
+        FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+        WHERE i.indrelid = 'public.futures_ratios'::regclass AND i.indisprimary
+        """
+    ).fetchall()
+    assert primary_key["columns"] == ["symbol", "period_start", "kind"]
+    assert pg.execute("SELECT to_regclass('replay.futures_ratios') AS t").fetchone()["t"] is None

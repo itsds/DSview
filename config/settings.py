@@ -123,6 +123,11 @@ TELEGRAM_API_URL: str = _env("TELEGRAM_API_URL", "https://api.telegram.org")
 # server. DSVIEW_BINANCE_REST_URL
 BINANCE_REST_URL: str = _env("BINANCE_REST_URL", "https://api.binance.com")
 
+# Binance's USDⓈ-M Futures REST API, which ingestion/futures_main.py polls
+# for the long/short ratios (Phase 4c; public market data, no key). The
+# tests point it at the same fake server. DSVIEW_BINANCE_FUTURES_REST_URL
+BINANCE_FUTURES_REST_URL: str = _env("BINANCE_FUTURES_REST_URL", "https://fapi.binance.com")
+
 
 # --- Pipeline contract (not overridable) -------------------------------------
 
@@ -144,6 +149,12 @@ _WHALE_ALERTS_TOPIC = "alerts.whales"
 # here, keyed by symbol; streaming/jobs/indicators.py computes indicators
 # from it. streaming/candle_topic.py owns the message shape.
 _CANDLES_TOPIC = "market.candles.1m"
+
+# ingestion/futures_main.py publishes every 5-minute period of the long/short
+# ratios here, keyed by symbol (ingestion/schema.py's FuturesRatio);
+# streaming/jobs/futures_ratios.py writes them to Postgres and Redis. Live's
+# alone in practice: the replay has no Futures feed.
+_FUTURES_RATIOS_TOPIC = "market.futures.ratios"
 
 LIVE = "live"
 REPLAY = "replay"
@@ -201,6 +212,10 @@ class Pipeline:
     @property
     def candles_topic(self) -> str:
         return self._prefixed(_CANDLES_TOPIC)
+
+    @property
+    def futures_ratios_topic(self) -> str:
+        return self._prefixed(_FUTURES_RATIOS_TOPIC)
 
     def consumer_group(self, live_group: str) -> str:
         """This pipeline's name for a consumer group live calls `live_group`."""
@@ -269,6 +284,7 @@ TRADES_TOPIC = PIPELINE.trades_topic
 DEPTH_TOPIC = PIPELINE.depth_topic
 WHALE_ALERTS_TOPIC = PIPELINE.whale_alerts_topic
 CANDLES_TOPIC = PIPELINE.candles_topic
+FUTURES_RATIOS_TOPIC = PIPELINE.futures_ratios_topic
 REDIS_PREFIX = PIPELINE.redis_prefix
 POSTGRES_DSN = PIPELINE.postgres_dsn
 DATA_ROOT = PIPELINE.data_root
@@ -307,3 +323,15 @@ FOOTPRINT_PRICE_STEP: Decimal = Decimal("1")
 # stay plain candles. The volume profile tools work on every timeframe.
 # Must match frontend/src/footprint/levels.js.
 FOOTPRINT_TIMEFRAMES: Tuple[str, ...] = ("1m", "5m", "15m", "1h")
+
+# The long/short ratios (Phase 4c), by the ids the topic, the Postgres rows,
+# the REST API and the chart use, each one of Binance Futures' endpoints for
+# the USDⓈ-M perpetual of the symbol's name (ingestion/binance_futures_rest.py):
+# all accounts' long/short ratio, top traders' by accounts and by positions,
+# and taker buy/sell volume. Must match frontend/src/indicators/futuresRatios.js.
+FUTURES_RATIO_KINDS: Tuple[str, ...] = ("global_accounts", "top_accounts", "top_positions", "taker_volume")
+
+# The period they're polled and stored at: Binance's finest. Bigger chart
+# timeframes are rolled up from it at read time (backend/postgres_client.py),
+# as candles are from 1m. Must match frontend/src/indicators/futuresRatios.js.
+FUTURES_RATIO_PERIOD: timedelta = timedelta(minutes=5)

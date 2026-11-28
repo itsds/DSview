@@ -63,6 +63,7 @@ def kafka_topics(test_services) -> None:
     from config.settings import (
         CANDLES_TOPIC,
         DEPTH_TOPIC,
+        FUTURES_RATIOS_TOPIC,
         KAFKA_BOOTSTRAP_SERVERS,
         TRADES_TOPIC,
         WHALE_ALERTS_TOPIC,
@@ -75,7 +76,7 @@ def kafka_topics(test_services) -> None:
             existing = set(await admin.list_topics())
             wanted = [
                 NewTopic(name=topic, num_partitions=1, replication_factor=1)
-                for topic in (TRADES_TOPIC, DEPTH_TOPIC, WHALE_ALERTS_TOPIC, CANDLES_TOPIC)
+                for topic in (TRADES_TOPIC, DEPTH_TOPIC, WHALE_ALERTS_TOPIC, CANDLES_TOPIC, FUTURES_RATIOS_TOPIC)
                 if topic not in existing
             ]
             if wanted:
@@ -87,6 +88,38 @@ def kafka_topics(test_services) -> None:
             await admin.close()
 
     asyncio.run(create())
+
+
+class FakeTime:
+    """A wall clock that only moves when something sleeps on it: rate-limit and backoff waits cost no real time."""
+
+    def __init__(self, start: float = 1_800_000_000.0) -> None:
+        self.now = start
+        self.sleeps = []
+
+    def clock(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += max(seconds, 0)
+
+
+@pytest.fixture
+def fake_time() -> FakeTime:
+    return FakeTime()
+
+
+@pytest.fixture
+def fake_binance():
+    """A fake Binance REST API (spot and Futures' ratios) on a free local port: tests/fake_binance.py."""
+    from fake_binance import FakeBinance
+
+    fake = FakeBinance().start()
+    try:
+        yield fake
+    finally:
+        fake.stop()
 
 
 @pytest.fixture

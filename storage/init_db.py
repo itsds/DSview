@@ -5,8 +5,8 @@ One-time, idempotent setup script: applies every storage/ddl/*.sql file
 against the Postgres instance in docker-compose.yml.
 
 Not a migration tool — four tables so far, per schema (candles_1m, candle_indicators,
-candle_revisions, footprint_1m), three more for live's backtest results,
-and no schema-change history to manage yet: every file is CREATE ... IF
+candle_revisions, footprint_1m), three more for live's backtest results
+and one for its Futures ratios, and no schema-change history to manage yet: every file is CREATE ... IF
 NOT EXISTS, so a column added to an existing table needs an ALTER TABLE
 by hand. Revisit with a real migration tool (e.g. Alembic) once that
 stops being rare.
@@ -14,7 +14,8 @@ stops being rare.
 Every pipeline gets the same tables (config/settings.py's Pipeline): live's
 in `public`, as always, and the replay's in a `replay` schema created here
 (Phase 4a), each file applied once per schema. The backtest results
-(backtests.sql, Phase 4b) are live's alone: LIVE_ONLY.
+(backtests.sql, Phase 4b) and the long/short ratios (futures_ratios.sql,
+Phase 4c) are live's alone: LIVE_ONLY.
 
 Run once, after `docker compose up -d`, from the repo root (which must
 be on PYTHONPATH for config/ to import — see config/settings.py):
@@ -36,8 +37,8 @@ from config.settings import LIVE_PIPELINE, PIPELINE_NAMES, Pipeline
 
 DDL_DIR = Path(__file__).parent / "ddl"
 # Applied to live's schema only: backtests read live's lake, and a replay has
-# no results to keep (docs/ROADMAP.md, Phase 4b).
-LIVE_ONLY = {"backtests.sql"}
+# no results to keep (docs/ROADMAP.md, Phase 4b); nor a Futures feed (4c).
+LIVE_ONLY = {"backtests.sql", "futures_ratios.sql"}
 
 
 def main() -> None:

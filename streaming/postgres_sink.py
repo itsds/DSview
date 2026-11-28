@@ -4,7 +4,8 @@ postgres_sink.py
 Postgres serving-layer writers: CandlePostgresSink for the Gold-tier
 OHLCV candles produced by candle_aggregator.py, FootprintPostgresSink for
 the footprint levels its footprint query produces, IndicatorPostgresSink
-for the indicators jobs/indicators.py computes — plus read_minute_closes(),
+for the indicators jobs/indicators.py computes, FuturesRatioPostgresSink
+for the long/short ratios jobs/futures_ratios.py consumes — plus read_minute_closes(),
 which that job warms its indicator state up from, and
 read_candle_revision(), which tells it when a backfill changed that
 history. The one place streaming/ touches psycopg.
@@ -125,6 +126,54 @@ class IndicatorPostgresSink:
         """Upsert rows of symbol, timeframe, window_start (aware UTC) and one value per INDICATOR_COLUMNS."""
         with self._conn.transaction(), self._conn.cursor() as cursor:
             cursor.executemany(_INDICATOR_UPSERT_SQL, list(rows))
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+# Rewrites a row only when a value differs (NUMERIC compares by value, so
+# "1.5000" from Binance equals the stored 1.5), and returns the rows it
+# inserted or changed: a refetch of unchanged history changes nothing.
+_FUTURES_RATIO_UPSERT_SQL = """
+    INSERT INTO futures_ratios (symbol, period_start, kind, ratio, long_value, short_value)
+    VALUES (%(symbol)s, %(period_start)s, %(kind)s, %(ratio)s, %(long_value)s, %(short_value)s)
+    ON CONFLICT (symbol, period_start, kind) DO UPDATE SET
+        ratio = EXCLUDED.ratio,
+        long_value = EXCLUDED.long_value,
+        short_value = EXCLUDED.short_value
+    WHERE (futures_ratios.ratio, futures_ratios.long_value, futures_ratios.short_value)
+          IS DISTINCT FROM (EXCLUDED.ratio, EXCLUDED.long_value, EXCLUDED.short_value)
+    RETURNING symbol, period_start
+"""
+
+
+class FuturesRatioPostgresSink:
+    """
+    Upserts Binance Futures' long/short ratios into futures_ratios
+    (storage/ddl/futures_ratios.sql), a consumer batch at a time, in one
+    transaction.
+    """
+
+    def __init__(self, dsn: str = POSTGRES_DSN) -> None:
+        self._conn = psycopg.connect(dsn, autocommit=True)
+
+    def write_rows(self, rows: Iterable[Mapping[str, Any]]) -> List[Tuple[str, datetime]]:
+        """
+        Upsert rows of symbol, period_start (aware UTC), kind, ratio,
+        long_value and short_value; (symbol, period_start) of every row that
+        was new or differed.
+        """
+        rows = list(rows)
+        if not rows:
+            return []
+        changed: List[Tuple[str, datetime]] = []
+        with self._conn.transaction(), self._conn.cursor() as cursor:
+            cursor.executemany(_FUTURES_RATIO_UPSERT_SQL, rows, returning=True)
+            while True:
+                changed.extend(cursor.fetchall())
+                if not cursor.nextset():
+                    break
+        return changed
 
     def close(self) -> None:
         self._conn.close()

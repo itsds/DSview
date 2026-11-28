@@ -17,7 +17,9 @@ $1 levels per minute, and each request merges them into its row size and
 timeframe (_FOOTPRINT_SQL), or sums a time range into a volume profile
 (_PROFILE_SQL). Backtest results (BacktestReader, Phase 4b) are read as
 backtest/backtest_store.py wrote them, the equity curve thinned for the
-chart (_EQUITY_SQL).
+chart (_EQUITY_SQL). The long/short ratios (FuturesRatioReader, Phase 4c)
+are stored per 5-minute period and rolled up to each timeframe like
+candles (_FUTURES_RATIOS_SQL).
 
 Author: @DS
 """
@@ -339,6 +341,78 @@ class BacktestReader:
             "points": [[row["window_start"], row["equity"]] for row in rows],
             "total": rows[0]["n"] if rows else 0,
         }
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+# The long/short ratios (Phase 4c; storage/ddl/futures_ratios.sql, written
+# by streaming/jobs/futures_ratios.py). Live's schema only.
+#
+# futures_ratios' 5-minute periods rolled up into `bucket`-sized bars,
+# epoch-aligned like the candles (_HISTORY_SQL), so a bar of ratios and its
+# candle share a start. The account and position ratios are snapshots:
+# each bar takes its last period, the ratio as of the bar's close, as a
+# candle takes its last minute's close. Taker volume adds up: a bar's
+# ratio is its buy volume over its sell volume, rounded to Binance's four
+# decimals, except where the bar is a single period, which keeps
+# Binance's own ratio (on 5m, every bar). The primary key's range scan
+# reads only the requested periods.
+_FUTURES_RATIOS_SQL = f"""
+    WITH periods AS (
+        SELECT date_bin(%(bucket)s, period_start, {_EPOCH}) AS bar, period_start, kind, ratio, long_value, short_value
+        FROM futures_ratios
+        WHERE symbol = %(symbol)s AND period_start >= %(start)s AND period_start < %(end)s
+    ), snapshots AS (
+        SELECT DISTINCT ON (bar, kind) bar, kind, ratio, long_value, short_value
+        FROM periods
+        WHERE kind <> 'taker_volume'
+        ORDER BY bar, kind, period_start DESC
+    ), taker AS (
+        SELECT bar, kind,
+               CASE WHEN count(*) = 1 THEN max(ratio)
+                    WHEN sum(short_value) > 0 THEN round(sum(long_value) / sum(short_value), 4)
+               END AS ratio,
+               sum(long_value) AS long_value, sum(short_value) AS short_value
+        FROM periods
+        WHERE kind = 'taker_volume'
+        GROUP BY bar, kind
+    )
+    SELECT bar, kind, trim_scale(ratio)::text, trim_scale(long_value)::text, trim_scale(short_value)::text
+    FROM (SELECT * FROM snapshots UNION ALL SELECT * FROM taker) rolled_up
+    ORDER BY bar, kind
+"""
+
+
+class FuturesRatioReader:
+    """Reads futures_ratios, rolled up to a timeframe."""
+
+    def __init__(self, dsn: str = POSTGRES_DSN) -> None:
+        self._conn = psycopg.connect(dsn, autocommit=True)
+
+    def get_bars(self, symbol: str, bucket: timedelta, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        """
+        Every `bucket`-sized bar starting in [start, end) (aligned to bar
+        starts by the caller) with any ratio, oldest first, as
+        {"window_start", "ratios": {kind: {"ratio", "long", "short"}}}:
+        numbers as plain decimal strings, a ratio missing from a bar it has
+        no period in. A taker ratio is None where the bar sold nothing.
+        """
+        rows = self._conn.execute(
+            _FUTURES_RATIOS_SQL, {"symbol": symbol, "bucket": bucket, "start": start, "end": end}
+        ).fetchall()
+        bars: list[dict[str, Any]] = []
+        for bar, kind, ratio, long, short in rows:
+            if not bars or bars[-1]["window_start"] != bar:
+                bars.append({"window_start": bar, "ratios": {}})
+            bars[-1]["ratios"][kind] = {"ratio": ratio, "long": long, "short": short}
+        return bars
+
+    def newest_period(self, symbol: str) -> datetime | None:
+        """The start of `symbol`'s newest stored period, if it has any."""
+        return self._conn.execute(
+            "SELECT max(period_start) FROM futures_ratios WHERE symbol = %s", (symbol,)
+        ).fetchone()[0]
 
     def close(self) -> None:
         self._conn.close()

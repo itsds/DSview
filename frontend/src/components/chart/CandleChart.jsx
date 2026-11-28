@@ -22,6 +22,10 @@
  * Spark's indicator values (indicators/server.js) arrive with every page
  * of candles and, for the bar in progress, from useLiveIndicators.js; they
  * go into one store per chart, which the manager reads on every refresh.
+ * Binance Futures' long/short ratios (indicators/futuresRatios.js) have a
+ * store of their own, filled only while a ratio indicator is shown: over
+ * REST for the bars loaded (the first page, then each scroll-back page),
+ * then live from useLiveFuturesRatios.js. Live's always, replay or not.
  *
  * The volume footprint is footprint/FootprintManager.js's: created with the
  * chart on a footprint timeframe (1m to 1h), turned on and off with the
@@ -57,9 +61,12 @@ import { DrawingController } from "../../drawing/DrawingController.js";
 import { FootprintManager } from "../../footprint/FootprintManager.js";
 import { FOOTPRINT_TIMEFRAMES } from "../../footprint/levels.js";
 import { useLiveFootprint } from "../../hooks/useLiveFootprint.js";
+import { useLiveFuturesRatios } from "../../hooks/useLiveFuturesRatios.js";
 import { useLiveIndicators } from "../../hooks/useLiveIndicators.js";
 import { LIVE } from "../../lib/pipelines.js";
 import { IndicatorManager } from "../../indicators/IndicatorManager.js";
+import { usesFuturesRatios } from "../../indicators/definitions.js";
+import { createFuturesRatioStore, ratioTimeframe } from "../../indicators/futuresRatios.js";
 import { legendRowsAt } from "../../indicators/legend.js";
 import { createServerIndicatorStore, serverColumn } from "../../indicators/server.js";
 import { DAY_SECONDS, candleTime, timeframeSeconds } from "../../lib/timeframes.js";
@@ -88,6 +95,13 @@ function toVolumeBar(candle, theme) {
     value: Number(candle.volume),
     color: Number(candle.close) >= Number(candle.open) ? theme.upVolume : theme.downVolume,
   };
+}
+
+// Asks the ratio store for every bar the chart has loaded, through the bar in progress.
+function ensureRatios(candleSeries, ratioValues, timeframe) {
+  const bars = candleSeries.data();
+  if (bars.length === 0) return;
+  ratioValues.ensure(bars[0].time, bars[bars.length - 1].time + timeframeSeconds(timeframe));
 }
 
 // The legend's line for the footprint, from FootprintManager's status.
@@ -134,6 +148,8 @@ export default function CandleChart({
   const drawingsRef = useRef(null);
   const indicatorsRef = useRef(null);
   const serverValuesRef = useRef(null);
+  const ratioValuesRef = useRef(null);
+  const showsRatiosRef = useRef(false);
   const footprintRef = useRef(null);
   const backtestMarkersRef = useRef(null);
   const lastBarTimeRef = useRef(null);
@@ -187,11 +203,17 @@ export default function CandleChart({
     });
 
     const serverValues = createServerIndicatorStore();
+    const ratioValues = createFuturesRatioStore({
+      symbol,
+      timeframe,
+      onChange: () => indicatorManager.refresh({ full: true }),
+    });
     const indicatorManager = new IndicatorManager({
       chart,
       candleSeries,
       volumeSeries,
       serverValues,
+      ratioValues,
       theme,
       element: containerRef.current,
       onValues: setIndicatorValues,
@@ -232,6 +254,7 @@ export default function CandleChart({
         volumeSeries.setData([...page.map((c) => toVolumeBar(c, theme)), ...volumeSeries.data()]);
         indicatorManager.refresh({ full: true });
         backtestMarkers.refresh();
+        if (showsRatiosRef.current) ensureRatios(candleSeries, ratioValues, timeframe);
       } catch (error) {
         console.error("Loading older candles failed:", error);
       } finally {
@@ -249,11 +272,13 @@ export default function CandleChart({
     drawingsRef.current = drawings;
     indicatorsRef.current = indicatorManager;
     serverValuesRef.current = serverValues;
+    ratioValuesRef.current = ratioValues;
     footprintRef.current = footprint;
     backtestMarkersRef.current = backtestMarkers;
 
     return () => {
       disposed = true;
+      ratioValues.destroy();
       drawings.destroy();
       indicatorManager.destroy();
       footprint?.destroy();
@@ -270,9 +295,18 @@ export default function CandleChart({
     drawingsRef.current.setMagnet(magnet);
   }, [magnet]);
 
+  const showsRatios = usesFuturesRatios(indicators);
   useEffect(() => {
     indicatorsRef.current.setIndicators(indicators);
-  }, [indicators]);
+    showsRatiosRef.current = showsRatios;
+    if (showsRatios && historyLoadedRef.current) ensureRatios(candleSeriesRef.current, ratioValuesRef.current, timeframe);
+  }, [indicators, showsRatios, timeframe]);
+
+  useLiveFuturesRatios(symbol, ratioTimeframe(timeframe), showsRatios, (update) => {
+    ratioValuesRef.current.addLive(update);
+    // On 1m a period lands on the five bars before the newest: refresh them all.
+    indicatorsRef.current.refresh({ full: true });
+  });
 
   useEffect(() => {
     backtestMarkersRef.current.setTrades(backtestTrades);
@@ -326,7 +360,8 @@ export default function CandleChart({
     reachedStartRef.current = history.length < HISTORY_PAGE_SIZE;
     indicatorsRef.current.refresh({ full: true });
     backtestMarkersRef.current.refresh();
-  }, [history, theme]);
+    if (showsRatiosRef.current) ensureRatios(candleSeriesRef.current, ratioValuesRef.current, timeframe);
+  }, [history, theme, timeframe]);
 
   useEffect(() => {
     if (!candle) return;
